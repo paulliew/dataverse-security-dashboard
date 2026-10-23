@@ -23,6 +23,7 @@ export interface Creation {
 export interface DailyMetric {
   day: string;
   users: number;
+  cumulativeUsers: number;
   organizations: number;
   tenants: number;
 }
@@ -98,6 +99,7 @@ export function aggregateDaily(
     buckets.set(day, { users: new Set(), organizations: new Set(), tenants: new Set() });
   }
   const users = new Set<string>();
+  const cumulativeUsers = new Set<string>();
   const organizations = new Set<string>();
   const tenants = new Set<string>();
   const unmappedOrganizations = new Set<string>();
@@ -110,6 +112,7 @@ export function aggregateDaily(
       bucket.users.add(creation.userObjectId);
       bucket.organizations.add(creation.organizationId);
     } else {
+      cumulativeUsers.add(creation.userObjectId);
       organizations.add(creation.organizationId);
     }
     const tenant = tenantByOrganization.get(creation.organizationId);
@@ -121,9 +124,10 @@ export function aggregateDaily(
     }
   }
   const daily = Array.from(buckets, ([day, bucket]) => {
+    for (const user of bucket.users) cumulativeUsers.add(user);
     for (const organization of bucket.organizations) organizations.add(organization);
     for (const tenant of bucket.tenants) tenants.add(tenant);
-    return { day, users: bucket.users.size, organizations: organizations.size, tenants: tenants.size };
+    return { day, users: bucket.users.size, cumulativeUsers: cumulativeUsers.size, organizations: organizations.size, tenants: tenants.size };
   });
   return {
     daily,

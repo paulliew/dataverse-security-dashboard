@@ -40,17 +40,34 @@ test('counts distinct users, organizations and mapped tenants rather than operat
     { organizationId: 'o3', tenantId: null },
   ];
   const result = aggregateDaily(records, mapping, '2026-10-22', '2026-10-24');
-  assert.deepEqual(result.daily[1], { day: '2026-10-23', users: 3, organizations: 3, tenants: 1 });
+  assert.deepEqual(result.daily[1], { day: '2026-10-23', users: 3, cumulativeUsers: 3, organizations: 3, tenants: 1 });
   assert.deepEqual(result.totals, { users: 3, organizations: 3, tenants: 1, unmappedOrganizations: 1 });
   assert.equal(result.daily[0].users, 0);
   assert.equal(result.daily[2].users, 0);
-  assert.deepEqual(result.daily[2], { day: '2026-10-24', users: 0, organizations: 3, tenants: 1 });
+  assert.deepEqual(result.daily[2], { day: '2026-10-24', users: 0, cumulativeUsers: 3, organizations: 3, tenants: 1 });
 });
 
 test('period totals are distinct across days, not sums of daily distincts', () => {
   const result = aggregateDaily([creation('u', 'o'), creation('u', 'o', '2026-10-22T10:00:00Z')], [], '2026-10-22', '2026-10-23');
   assert.equal(result.totals.users, 1);
   assert.equal(result.daily.reduce((sum, day) => sum + day.users, 0), 2);
+  assert.deepEqual(result.daily.map(day => day.cumulativeUsers), [1, 1]);
+});
+
+test('cumulative users deduplicate across dates and organizations and include pre-range history', () => {
+  const records = [
+    creation('u2', 'o2', '2026-10-23T10:00:00Z'),
+    creation('u1', 'o1', '2026-09-01T10:00:00Z'),
+    creation('u1', 'o2', '2026-10-22T10:00:00Z'),
+    creation('u2', 'o1', '2026-10-23T11:00:00Z'),
+    creation('future', 'o3', '2026-10-25T00:00:00Z'),
+  ];
+  const result = aggregateDaily(records, [], '2026-10-21', '2026-10-24');
+  assert.deepEqual(result.daily.map(day => day.users), [0, 1, 1, 0]);
+  assert.deepEqual(result.daily.map(day => day.cumulativeUsers), [1, 1, 2, 2]);
+  assert.deepEqual(aggregateDaily(records, [], '2026-10-23', '2026-10-24').daily, result.daily.slice(2));
+  assert.equal(aggregateDaily(records, [], '2026-10-21', '2026-10-22').daily.at(-1)!.cumulativeUsers, 1);
+  assert.equal(aggregateDaily(records, [], '2026-10-24', '2026-10-24').totals.users, 0);
 });
 
 test('accumulates distinct organizations and mapped tenants from history before the range', () => {
@@ -71,10 +88,10 @@ test('accumulates distinct organizations and mapped tenants from history before 
   ];
   const result = aggregateDaily(records, mapping, '2026-10-21', '2026-10-24');
   assert.deepEqual(result.daily, [
-    { day: '2026-10-21', users: 0, organizations: 2, tenants: 1 },
-    { day: '2026-10-22', users: 2, organizations: 3, tenants: 1 },
-    { day: '2026-10-23', users: 1, organizations: 3, tenants: 1 },
-    { day: '2026-10-24', users: 1, organizations: 4, tenants: 2 },
+    { day: '2026-10-21', users: 0, cumulativeUsers: 2, organizations: 2, tenants: 1 },
+    { day: '2026-10-22', users: 2, cumulativeUsers: 4, organizations: 3, tenants: 1 },
+    { day: '2026-10-23', users: 1, cumulativeUsers: 5, organizations: 3, tenants: 1 },
+    { day: '2026-10-24', users: 1, cumulativeUsers: 6, organizations: 4, tenants: 2 },
   ]);
   assert.deepEqual(result.totals, { users: 4, organizations: 4, tenants: 2, unmappedOrganizations: 1 });
   const narrower = aggregateDaily(records, mapping, '2026-10-23', '2026-10-24');
@@ -93,8 +110,9 @@ test('carries history across empty dates without inflating counts and excludes f
   assert.deepEqual(result.daily.map(({ users, organizations, tenants }) => ({ users, organizations, tenants })),
     Array.from({ length: 3 }, () => ({ users: 0, organizations: 1, tenants: 1 })));
   assert.deepEqual(result.totals, { users: 0, organizations: 1, tenants: 1, unmappedOrganizations: 0 });
+  assert.deepEqual(result.daily.map(day => day.cumulativeUsers), [1, 1, 1]);
   assert.deepEqual(aggregateDaily([], [], '2026-10-23', '2026-10-23').daily,
-    [{ day: '2026-10-23', users: 0, organizations: 0, tenants: 0 }]);
+    [{ day: '2026-10-23', users: 0, cumulativeUsers: 0, organizations: 0, tenants: 0 }]);
 });
 
 test('fails explicitly on conflicting tenant mappings, ambiguous correlations and invalid input', () => {
@@ -118,13 +136,16 @@ test('90 days ago through today yields 91 aligned UTC buckets, deterministic syn
   assert.equal(result.daily.at(-1)!.day, '2026-10-23');
   assert.equal(data.historyStart, '2026-06-25');
   assert.ok(result.daily[0].organizations > 0 && result.daily[0].tenants > 0);
+  assert.ok(result.daily[0].cumulativeUsers > result.daily[0].users);
   assert.ok(result.daily[0].organizations < result.daily.at(-1)!.organizations);
   assert.ok(result.daily[0].tenants < result.daily.at(-1)!.tenants);
   const emptyIndex = result.daily.findIndex((day, index) => index > 0 && day.users === 0);
   assert.ok(emptyIndex > 0);
   assert.equal(result.daily[emptyIndex].organizations, result.daily[emptyIndex - 1].organizations);
   assert.equal(result.daily[emptyIndex].tenants, result.daily[emptyIndex - 1].tenants);
+  assert.equal(result.daily[emptyIndex].cumulativeUsers, result.daily[emptyIndex - 1].cumulativeUsers);
   for (let index = 1; index < result.daily.length; index++) {
+    assert.ok(result.daily[index].cumulativeUsers >= result.daily[index - 1].cumulativeUsers);
     assert.ok(result.daily[index].organizations >= result.daily[index - 1].organizations);
     assert.ok(result.daily[index].tenants >= result.daily[index - 1].tenants);
   }
