@@ -9,6 +9,12 @@ test('default 90-day synthetic trends, inspection, range, CSV and methodology wo
   await expect(page.getByText('July 25, 2026 – October 23, 2026')).toBeVisible();
   await page.getByRole('button', { name: 'Show daily data' }).click();
   await expect(page.locator('tbody tr')).toHaveCount(91);
+  await expect(page.getByRole('columnheader', { name: 'Organizations to date', exact: true })).toBeVisible();
+  await expect(page.getByRole('columnheader', { name: 'Mapped tenants to date', exact: true })).toBeVisible();
+  await expect(page.locator('.daily-tag')).toHaveText(['daily distinct', 'distinct to date', 'distinct to date']);
+  const organizationCard = await page.locator('.kpi-value').nth(1).innerText();
+  const tenantCard = await page.locator('.kpi-value').nth(2).innerText();
+  const latestCounts = await page.locator('tbody tr').first().locator('td').allTextContents();
   await page.getByLabel('Inspect day').fill('2026-10-22');
   await page.getByLabel('Inspect day').dispatchEvent('change');
   await expect(page.locator('[data-chart-date]').first()).toHaveText('Oct 22');
@@ -28,8 +34,20 @@ test('default 90-day synthetic trends, inspection, range, CSV and methodology wo
   expect(csv.trim().split('\n')).toHaveLength(92);
   expect(csv).toContain('2026-07-25,');
   expect(csv).toContain(',synthetic');
+  expect(csv.split('\n')[0]).toBe('date_utc,new_agent_users_daily,organizations_distinct_to_date,mapped_tenants_distinct_to_date,data_mode');
+  const csvRows = csv.trim().split('\n').slice(1).map(row => row.split(','));
+  for (let index = 1; index < csvRows.length; index++) {
+    expect(Number(csvRows[index][2])).toBeGreaterThanOrEqual(Number(csvRows[index - 1][2]));
+    expect(Number(csvRows[index][3])).toBeGreaterThanOrEqual(Number(csvRows[index - 1][3]));
+  }
+  expect(csvRows.at(-1)!.slice(1, 4)).toEqual(latestCounts);
   await page.getByLabel('Trend date range').selectOption('7');
   await expect(page.locator('tbody tr')).toHaveCount(8);
+  await expect(page.locator('.kpi-value').nth(1)).toHaveText(organizationCard);
+  await expect(page.locator('.kpi-value').nth(2)).toHaveText(tenantCard);
+  expect(await page.locator('tbody tr').first().locator('td').allTextContents()).toEqual(latestCounts);
+  const firstVisible = csvRows.find(row => row[0] === '2026-10-16')!;
+  expect(await page.locator('tbody tr').last().locator('td').allTextContents()).toEqual(firstVisible.slice(1, 4));
   await page.setViewportSize({ width: 800, height: 900 });
   await expect(page.locator('.trend-chart').first()).toHaveAttribute('viewBox', '0 0 450 222');
   await page.locator('.trend-chart').first().focus();

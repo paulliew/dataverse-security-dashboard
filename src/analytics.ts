@@ -102,24 +102,31 @@ export function aggregateDaily(
   const tenants = new Set<string>();
   const unmappedOrganizations = new Set<string>();
   for (const creation of creations) {
-    const bucket = buckets.get(utcDay(new Date(creation.timestamp)));
-    if (!bucket) continue;
-    users.add(creation.userObjectId);
-    organizations.add(creation.organizationId);
-    bucket.users.add(creation.userObjectId);
-    bucket.organizations.add(creation.organizationId);
+    const day = utcDay(new Date(creation.timestamp));
+    if (day > end) continue;
+    const bucket = buckets.get(day);
+    if (bucket) {
+      users.add(creation.userObjectId);
+      bucket.users.add(creation.userObjectId);
+      bucket.organizations.add(creation.organizationId);
+    } else {
+      organizations.add(creation.organizationId);
+    }
     const tenant = tenantByOrganization.get(creation.organizationId);
     if (tenant) {
-      tenants.add(tenant);
-      bucket.tenants.add(tenant);
+      if (bucket) bucket.tenants.add(tenant);
+      else tenants.add(tenant);
     } else {
       unmappedOrganizations.add(creation.organizationId);
     }
   }
+  const daily = Array.from(buckets, ([day, bucket]) => {
+    for (const organization of bucket.organizations) organizations.add(organization);
+    for (const tenant of bucket.tenants) tenants.add(tenant);
+    return { day, users: bucket.users.size, organizations: organizations.size, tenants: tenants.size };
+  });
   return {
-    daily: Array.from(buckets, ([day, bucket]) => ({
-      day, users: bucket.users.size, organizations: bucket.organizations.size, tenants: bucket.tenants.size,
-    })),
+    daily,
     totals: { users: users.size, organizations: organizations.size, tenants: tenants.size, unmappedOrganizations: unmappedOrganizations.size },
   };
 }

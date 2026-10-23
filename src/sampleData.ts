@@ -4,6 +4,7 @@ import type { OrganizationDetail, TraceEvent } from './analytics.ts';
 export interface SampleDataset {
   mode: 'synthetic';
   asOf: string;
+  historyStart: string;
   events: TraceEvent[];
   organizationDetails: OrganizationDetail[];
 }
@@ -16,15 +17,16 @@ export function loadSampleData(now = new Date()): SampleDataset {
     organizationId: `sample-org-${index + 1}`,
     tenantId: index === 23 ? null : `sample-tenant-${Math.floor(index / 3) + 1}`,
   }));
-  for (let offset = 90; offset >= 0; offset--) {
+  for (let offset = 120; offset >= 0; offset--) {
     const day = daysBefore(asOf, offset);
-    const progress = 90 - offset;
+    const progress = Math.max(0, 90 - offset);
+    const organizationCount = Math.min(24, 6 + Math.floor((120 - offset) / 6));
     const weekday = new Date(`${day}T00:00:00Z`).getUTCDay();
     const count = progress === 18 || progress === 47 ? 0
       : Math.round((9 + progress * 0.55 + Math.sin(progress * 0.6) * 9) * (weekday === 0 || weekday === 6 ? 0.45 : 1));
     for (let index = 0; index < count; index++) {
       const correlationId = `sample-${day}-${index}`;
-      const organizationId = `sample-org-${(index * 7 + progress) % 24 + 1}`;
+      const organizationId = `sample-org-${(index * 7 + progress) % organizationCount + 1}`;
       const userObjectId = `sample-user-${day}-${index}`;
       const createdAt = `${day}T${String(1 + index % 18).padStart(2, '0')}:04:00Z`;
       events.push(
@@ -40,5 +42,5 @@ export function loadSampleData(now = new Date()): SampleDataset {
     { correlationId: 'sample-midnight', timestamp: `${daysBefore(asOf, 1)}T23:59:30Z`, kind: 'applyUser' },
     { correlationId: 'sample-midnight', timestamp: `${asOf}T00:00:10Z`, kind: 'userCreated' },
   );
-  return { mode: 'synthetic', asOf, events, organizationDetails };
+  return { mode: 'synthetic', asOf, historyStart: daysBefore(asOf, 120), events, organizationDetails };
 }

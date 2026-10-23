@@ -1,6 +1,6 @@
 # Dataverse security dashboard
 
-A responsive, sample-data-first dashboard for **Dataverse Agent user creation trends**. Explore daily new Agent users, organizations with creations, and tenants mapped through organization details. This first feature measures creation/adoption, **not** runtime usage, security posture, enabled-user inventory, or sign-ins.
+A responsive, sample-data-first dashboard for **Dataverse Agent user creation trends**. Explore daily new Agent users alongside accumulated distinct organizations and mapped tenants to date. Organization and tenant counts include all available history before the displayed range. This first feature measures creation/adoption, **not** runtime usage, security posture, enabled-user inventory, or sign-ins.
 
 **Everything shown is synthetic. No Dataverse, Microsoft Graph, or production analytics queries are executed.** No credentials or environment configuration are required. Future security features are labeled Planned, not implemented.
 
@@ -20,7 +20,7 @@ npm run build
 npm run preview
 ```
 
-The default range starts **90 UTC dates before today, through today inclusive**: 91 aligned daily buckets. For example, on October 23, 2026 it starts July 25, 2026. The dataset is generated deterministically relative to the UTC date when the page loads; today is a full illustrative sample, not measured partial-day telemetry. Reload after midnight to advance the anchor date.
+The default range starts **90 UTC dates before today, through today inclusive**: 91 aligned daily buckets. For example, on October 23, 2026 it starts July 25, 2026. Synthetic history begins 120 UTC dates before today (June 25, 2026 in that example), so accumulated organization and tenant counts have a baseline before the chart starts. The dataset is generated deterministically relative to the UTC date when the page loads; today is a full illustrative sample, not measured partial-day telemetry. Reload after midnight to advance the anchor date.
 
 Use the date-range selector, hover charts, or focus a chart and use Left/Right/Home/End to inspect dates. The date input synchronizes all three charts. “Show daily data” exposes an accessible table; “Export CSV” downloads the selected daily series with a synthetic-data column and filename. “How it works” documents the definitions in-app.
 
@@ -38,12 +38,17 @@ The provided correlation requirements are implemented against a **sanitized norm
 1. Group all available traces by nonempty `correlationId`.
 2. Require an Agent user identification with `userObjectId` and `organizationId`, a creation event, and an apply-user **or** force-sync operation in that correlation.
 3. Assign the correlation to its earliest creation-event timestamp, in UTC. **Correlate before date filtering**, so an identification before midnight can match a creation after midnight.
-4. Filter creation records to the selected date range. Count distinct user object IDs and organization IDs within each day, not correlation/operation counts.
-5. Look up each creation's organization in organization details; count distinct nonempty mapped tenant IDs per day. Several organizations can map to one tenant. An unmapped organization still contributes to user and organization counts.
+4. Count distinct created user object IDs within each visible UTC day, not correlation/operation counts. The Agent user card deduplicates across the selected date range.
+5. For each displayed day, count distinct organization IDs from **all available qualifying creation history through the end of that UTC date**, including history before the selected range. Repeated organizations across users, operations, and dates count once.
+6. Look up those organizations in organization details and count distinct nonempty mapped tenant IDs through that date. Several organizations can map to one tenant; that tenant counts once. An unmapped organization still contributes to accumulated organization counts and its in-range creations still contribute to user counts.
 
-Period cards deduplicate across the entire range, not by summing daily distincts. These are users associated with qualifying creation events, not a claim that each ID's first-ever creation was verified against historical inventory. Synthetic empty days are zero-filled. A future live adapter must distinguish observed zero from unavailable telemetry.
+Organization and tenant cards show accumulated distinct counts through the range's end date (today in the UI); changing only the visible start date does not reset the baseline or alter shared dates' accumulated counts. **Never sum daily distinct counts to produce a distinct-to-date count.** The aggregator seeds organization/tenant sets with pre-range history, then adds each day's identities and emits the sizes of those sets. Events after the range's end date are excluded.
 
-Tenant mapping coverage = organizations in qualifying creations with a nonempty tenant mapping / all organizations in those creations. The sample includes multiple organizations per tenant, one unmapped organization, no-creation days, both qualifying operation types, and a cross-midnight correlation. Exact duplicate mapping rows cannot cause join fan-out. Conflicting nonempty mappings and ambiguous correlation identities produce explicit errors rather than selecting arbitrary values. A source adapter must preserve these invariants and validate input.
+These are users associated with qualifying creation events, not a claim that each ID's first-ever creation was verified against historical inventory. Accumulated organizations and tenants represent **available-history adoption**, not verified lifetime totals or currently enabled populations. No-creation sample days show zero daily new users and carry forward accumulated organization and tenant counts. A future live adapter must distinguish observed zero from unavailable telemetry.
+
+Tenant mapping coverage = organizations in all available qualifying history through the end date with a nonempty tenant mapping / all organizations in that history. The sample includes pre-range history, progressive organization adoption, multiple organizations per tenant, one unmapped organization, no-creation days, both qualifying operation types, and a cross-midnight correlation. Exact duplicate mapping rows cannot cause join fan-out. Conflicting nonempty mappings and ambiguous correlation identities produce explicit errors rather than selecting arbitrary values. A source adapter must preserve these invariants and validate input.
+
+CSV columns are `date_utc`, `new_agent_users_daily`, `organizations_distinct_to_date`, `mapped_tenants_distinct_to_date`, and `data_mode`. Table headers, chart readouts, and accessible announcements use the same daily-versus-accumulated definitions.
 
 ## Architecture & later live integration
 
@@ -70,7 +75,7 @@ Tenant mapping coverage = organizations in qualifying creations with a nonempty 
 
 The sanitized organization-details mapping is `{ organizationId: string; tenantId: string | null }`. Production table/column names are deliberately not assumed. Mapping snapshots are not historical tenant membership.
 
-For future live integration, implement an authorized server-side adapter that normalizes verified sources to these contracts. Do not put production credentials or internal queries in browser code. Resolve organization-details schema, tenant authorization, identifier scoping, mapping freshness, retention, late events and correlation completeness first. Fetch correlation context outside the display window (or expand matching correlation IDs) before aggregation; an arbitrary one-day padding cannot guarantee complete correlations. Expose completeness and unmapped/conflicting records explicitly. No live adapter, authentication, production query, or source-column detection is included in this version.
+For future live integration, implement an authorized server-side adapter that normalizes verified sources to these contracts. Do not put production credentials or internal queries in browser code. Resolve organization-details schema, tenant authorization, identifier scoping, mapping freshness, retention, late events and correlation completeness first. Fetch correlation context outside the display window (or expand matching correlation IDs) before aggregation; an arbitrary one-day padding cannot guarantee complete correlations. Accumulated distinct organization/tenant queries must retain all available pre-range creation history (or an exact historical identity baseline), not filter to the display range before deduplicating. Keep the existing global source coverage, deduplicate identities across sources, and report the earliest available history and any gaps explicitly; do not imply lifetime completeness from retained telemetry. Expose completeness and unmapped/conflicting records explicitly. No live adapter, authentication, production query, or source-column detection is included in this version. This repository change does not modify any external production dashboard or email-report query.
 
 Google Fonts supplies DM Sans and Manrope when available; system sans-serif fallbacks work offline. There are no telemetry SDKs or analytics trackers.
 

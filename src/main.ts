@@ -30,8 +30,8 @@ let tableVisible = false;
 type Metric = 'users' | 'organizations' | 'tenants';
 const metrics: { key: Metric; title: string; description: string; color: string; icon: string }[] = [
   { key: 'users', title: 'New Agent users', description: 'Distinct user object IDs in qualifying creation correlations', color: '#008778', icon: 'agent' },
-  { key: 'organizations', title: 'Organizations', description: 'Distinct organizations with Agent user creations', color: '#5779bb', icon: 'building' },
-  { key: 'tenants', title: 'Tenants', description: 'Distinct mapped tenants with Agent user creations', color: '#a77b43', icon: 'layers' },
+  { key: 'organizations', title: 'Organizations', description: 'Accumulated distinct organizations through each date', color: '#5779bb', icon: 'building' },
+  { key: 'tenants', title: 'Tenants', description: 'Accumulated distinct mapped tenants through each date', color: '#a77b43', icon: 'layers' },
 ];
 
 function chart(metric: typeof metrics[number], index: number): string {
@@ -49,11 +49,11 @@ function chart(metric: typeof metrics[number], index: number): string {
   const labels = [0, Math.floor(values.length / 3), Math.floor(values.length * 2 / 3), values.length - 1]
     .map((i, n) => `<text x="${x(i)}" y="${height - 7}" text-anchor="${n === 0 ? 'start' : n === 3 ? 'end' : 'middle'}">${dateLabel(data.daily[i].day)}</text>`).join('');
   return `<article class="chart-card ${index === 0 ? 'primary-chart' : ''}" style="--series:${metric.color}">
-    <div class="chart-heading"><div><div class="eyebrow">DAILY CREATIONS</div><h2>${metric.title}</h2><p>${metric.description}</p></div>
+    <div class="chart-heading"><div><div class="eyebrow">${metric.key === 'users' ? 'DAILY CREATIONS' : 'ACCUMULATED TO DATE'}</div><h2>${metric.title}</h2><p>${metric.description}</p></div>
     <span class="chart-symbol">${icon(metric.icon)}</span></div>
-    <div class="chart-readout"><strong data-value="${metric.key}">${format.format(data.daily[selectedIndex][metric.key])}</strong><span data-chart-date>${dateLabel(data.daily[selectedIndex].day)}${selectedIndex === data.daily.length - 1 ? ' · today' : ''}</span><span class="daily-tag">daily distinct</span></div>
-    <svg class="trend-chart" data-metric="${metric.key}" role="img" aria-label="${metric.title}, daily synthetic counts. Use left and right arrow keys to inspect dates." tabindex="0" viewBox="0 0 ${width} ${height}">
-      <title>${metric.title} — synthetic daily trend</title>
+    <div class="chart-readout"><strong data-value="${metric.key}">${format.format(data.daily[selectedIndex][metric.key])}</strong><span data-chart-date>${dateLabel(data.daily[selectedIndex].day)}${selectedIndex === data.daily.length - 1 ? ' · today' : ''}</span><span class="daily-tag">${metric.key === 'users' ? 'daily distinct' : 'distinct to date'}</span></div>
+    <svg class="trend-chart" data-metric="${metric.key}" role="img" aria-label="${metric.title}, synthetic ${metric.key === 'users' ? 'daily new creations' : 'accumulated distinct counts from all available history'}. Use left and right arrow keys to inspect dates." tabindex="0" viewBox="0 0 ${width} ${height}">
+      <title>${metric.title} — synthetic ${metric.key === 'users' ? 'daily' : 'accumulated distinct'} trend</title>
       <defs><linearGradient id="fill-${metric.key}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${metric.color}" stop-opacity=".17"/><stop offset="100%" stop-color="${metric.color}" stop-opacity=".01"/></linearGradient></defs>
       ${ticks}${labels}
       <polygon points="${left},${height - bottom} ${points} ${width - right},${height - bottom}" fill="url(#fill-${metric.key})"/>
@@ -61,7 +61,7 @@ function chart(metric: typeof metrics[number], index: number): string {
       <line class="selection-line" x1="${x(selectedIndex)}" x2="${x(selectedIndex)}" y1="${top}" y2="${height - bottom}"/>
       <circle class="selection-dot" cx="${x(selectedIndex)}" cy="${y(values[selectedIndex])}" r="4.5" fill="${metric.color}" stroke="white" stroke-width="2"/>
     </svg>
-    <div class="chart-footer"><span><i class="legend-dot"></i> ${metric.title === 'New Agent users' ? 'Agent users created' : metric.title + ' with creations'}</span><span>UTC · synthetic</span></div>
+    <div class="chart-footer"><span><i class="legend-dot"></i> ${metric.key === 'users' ? 'Agent users created' : metric.title + ' to date'}</span><span>UTC · synthetic</span></div>
   </article>`;
 }
 
@@ -86,16 +86,16 @@ function render(): void {
         <div class="page-heading"><div><div class="eyebrow">IDENTITY & ACCESS / AGENT USERS</div><h1>Agent users<span class="title-dot">.</span></h1><p>Understand adoption. Follow creation trends. See the bigger picture.</p></div><button class="button export-button" id="export">${icon('download')} Export CSV</button></div>
         <div class="sample-banner">${icon('info')}<p><strong>You're exploring synthetic sample data.</strong> These trends illustrate Agent user creation, not live usage or security posture.</p><button data-methodology>How it works ${icon('arrow')}</button></div>
         <section class="range-toolbar" aria-label="Date range"><div><span class="section-kicker">CREATION OVERVIEW</span><span class="range-caption">${dateLabel(data.daily[0].day, true)} – ${dateLabel(source.asOf, true)}</span></div><label class="range-select">${icon('calendar')}<select id="range" aria-label="Trend date range"><option value="90" ${range === 90 ? 'selected' : ''}>90 days ago through today</option><option value="30" ${range === 30 ? 'selected' : ''}>30 days ago through today</option><option value="7" ${range === 7 ? 'selected' : ''}>7 days ago through today</option></select></label></section>
-        <section class="kpi-grid" aria-label="Distinct totals for selected period">
-          ${metrics.map(metric => `<article class="kpi"><div class="kpi-label">${metric.title}${icon(metric.icon)}</div><div class="kpi-value">${format.format(totals[metric.key])}</div><div class="kpi-note"><span class="mini-dot" style="background:${metric.color}"></span>Distinct across selected period</div></article>`).join('')}
+        <section class="kpi-grid" aria-label="Agent users in selected period; organizations and tenants accumulated through today">
+          ${metrics.map(metric => `<article class="kpi"><div class="kpi-label">${metric.title}${icon(metric.icon)}</div><div class="kpi-value">${format.format(totals[metric.key])}</div><div class="kpi-note"><span class="mini-dot" style="background:${metric.color}"></span>${metric.key === 'users' ? 'Distinct across selected period' : 'Available-history distinct to date'}</div></article>`).join('')}
           <article class="kpi coverage"><div class="kpi-label">Tenant mapping${icon('check')}</div><div class="kpi-value">${coverage}<span>%</span></div><div class="kpi-note">${totals.unmappedOrganizations} of ${totals.organizations} organizations unmapped</div></article>
         </section>
         <section id="trends" aria-labelledby="trends-title"><div class="section-heading"><div><h2 id="trends-title">Creation trends</h2><p>Three perspectives. One aligned daily timeline.</p></div><div class="inspect-control"><label for="inspect-day">Inspect day</label><input id="inspect-day" type="date" min="${data.daily[0].day}" max="${source.asOf}" value="${data.daily[selectedIndex].day}" /></div></div>
           <div class="charts-grid">${metrics.map(chart).join('')}</div>
-          <div class="trend-note">${icon('info')}<span>${data.daily.length} UTC calendar buckets, including today. Daily organization and tenant counts are not cumulative. Hover a chart or use its arrow keys to inspect.</span></div>
+          <div class="trend-note">${icon('info')}<span>${data.daily.length} UTC calendar buckets, including today. Agent users are daily new creations; organizations and tenants accumulate distinctly from all available sample history since ${dateLabel(source.historyStart, true)}, including before the selected range. Hover a chart or use its arrow keys to inspect.</span></div>
         </section>
-        <section class="mapping-note"><span class="mapping-icon">${icon('layers')}</span><div><h3>Organizations aren't tenants.</h3><p>Multiple organizations can belong to one tenant. Tenant counts use organization-details mappings; ${totals.unmappedOrganizations} unmapped organization${totals.unmappedOrganizations === 1 ? ' is' : 's are'} included in user and organization totals, but excluded from tenant totals.</p></div><button class="text-button" data-methodology>View methodology ${icon('arrow')}</button></section>
-        <section class="daily-section"><div class="daily-heading"><div><h2>Behind the trends</h2><p>Daily distinct counts, ready for a closer look.</p></div><button class="button" id="toggle-table" aria-expanded="${tableVisible}" aria-controls="daily-table">${tableVisible ? 'Hide' : 'Show'} daily data ${icon('grid')}</button></div><div id="daily-table" ${tableVisible ? '' : 'hidden'}><div class="table-scroll"><table><caption>Synthetic daily creation metrics (UTC)</caption><thead><tr><th scope="col">Creation date (UTC)</th><th scope="col">New Agent users</th><th scope="col">Organizations</th><th scope="col">Mapped tenants</th></tr></thead><tbody>${[...data.daily].reverse().map(day => `<tr><th scope="row">${day.day}</th><td>${day.users}</td><td>${day.organizations}</td><td>${day.tenants}</td></tr>`).join('')}</tbody></table></div></div></section>
+        <section class="mapping-note"><span class="mapping-icon">${icon('layers')}</span><div><h3>Organizations aren't tenants.</h3><p>Multiple organizations can belong to one tenant. Tenant counts use organization-details mappings; ${totals.unmappedOrganizations} organization${totals.unmappedOrganizations === 1 ? '' : 's'} in the available history through today ${totals.unmappedOrganizations === 1 ? 'is' : 'are'} unmapped. These remain in accumulated organization counts and their in-range creations remain in user counts, but they add no tenant.</p></div><button class="text-button" data-methodology>View methodology ${icon('arrow')}</button></section>
+        <section class="daily-section"><div class="daily-heading"><div><h2>Behind the trends</h2><p>Daily new users; accumulated distinct organizations and tenants.</p></div><button class="button" id="toggle-table" aria-expanded="${tableVisible}" aria-controls="daily-table">${tableVisible ? 'Hide' : 'Show'} daily data ${icon('grid')}</button></div><div id="daily-table" ${tableVisible ? '' : 'hidden'}><div class="table-scroll"><table><caption>Synthetic daily new users and accumulated distinct counts (UTC)</caption><thead><tr><th scope="col">Date (UTC)</th><th scope="col">New Agent users (daily)</th><th scope="col">Organizations to date</th><th scope="col">Mapped tenants to date</th></tr></thead><tbody>${[...data.daily].reverse().map(day => `<tr><th scope="row">${day.day}</th><td>${day.users}</td><td>${day.organizations}</td><td>${day.tenants}</td></tr>`).join('')}</tbody></table></div></div></section>
         <footer class="page-footer"><span>${icon('shield')} Dataverse security intelligence</span><span>Synthetic dataset · generated for ${source.asOf} UTC · no live connection</span></footer>
         <p id="day-announcement" class="sr-only" aria-live="polite"></p>
       </main>
@@ -103,9 +103,9 @@ function render(): void {
     <dialog id="methodology" aria-labelledby="method-title"><div class="dialog-heading"><span class="eyebrow">DATA & DEFINITIONS</span><button id="close-dialog" class="close-button" aria-label="Close methodology">×</button></div><h2 id="method-title">What these numbers mean</h2>
       <p>This is a <strong>synthetic creation-trend dashboard</strong>, not an inventory of enabled users, API activity, sign-ins, permissions, or risk.</p>
       <h3>Agent users, specifically</h3><p>Dataverse Agent users are provisioned for AI agents with enterprise-managed Microsoft Entra agent identities. A human user, application user, parent agent identity, and agent's user account are distinct concepts. An Entra agent identity alone is not counted here.</p>
-      <h3>From correlated events to daily counts</h3><p>A qualifying correlation needs an Agent user identification with a user and organization ID, a creation event, and an apply-user or force-sync operation. Correlations are resolved before date filtering and assigned to the earliest creation-event timestamp in UTC, including when detection happened on a different day.</p>
-      <p><strong>Users:</strong> distinct created user object IDs. <strong>Organizations:</strong> distinct organization IDs on those creations. <strong>Tenants:</strong> distinct tenant IDs resolved from organization details. Duplicate mappings don't multiply counts; conflicting mappings cause an explicit error. Missing mappings don't reduce user or organization counts.</p>
-      <h3>Range & sample limitations</h3><p>The default starts 90 UTC dates before today and includes today: 91 daily buckets. Period cards deduplicate across the entire selected range; daily counts deduplicate within each date. Today is an illustrative sample, not a complete observed day. Synthetic dates without creations are zero-filled. In a future live adapter, unavailable telemetry must be marked unknown, not assumed zero.</p>
+      <h3>From correlated events to daily and to-date counts</h3><p>A qualifying correlation needs an Agent user identification with a user and organization ID, a creation event, and an apply-user or force-sync operation. Correlations are resolved before date filtering and assigned to the earliest creation-event timestamp in UTC, including when detection happened on a different day.</p>
+      <p><strong>Users:</strong> distinct created user object IDs within each UTC date, with a selected-period distinct card. <strong>Organizations:</strong> accumulated distinct organization IDs on qualifying creations through the end of each date. <strong>Tenants:</strong> accumulated distinct tenant IDs resolved from those organizations through each date. Organization and tenant cards show these counts through today; they do not reset when the visible range changes. Repeated organizations or tenants are counted once, never summed from daily distincts. Duplicate mappings don't multiply counts; conflicting mappings cause an explicit error. Missing mappings don't reduce user or organization counts.</p>
+      <h3>Range & sample limitations</h3><p>The default starts 90 UTC dates before today and includes today: 91 daily buckets. Organization and tenant counts include all available history before the selected range, starting ${dateLabel(source.historyStart, true)} in this synthetic dataset. This is available-history accumulation, not a verified lifetime inventory or currently enabled population. A date without creations has zero new users and carries forward accumulated counts. Today is an illustrative sample, not a complete observed day. In a future live adapter, unavailable telemetry must be marked unknown, not assumed zero, and historical coverage must be reported explicitly.</p>
       <p>No production query is executed. The normalized source and organization-to-tenant contract are illustrative, not a verified production schema. Live access, correlation completeness, telemetry retention, mapping freshness, and source validation remain future work.</p>
       <h3>Microsoft references</h3><p><a href="https://learn.microsoft.com/en-us/entra/agent-id/agent-users" target="_blank" rel="noreferrer">Microsoft Entra agent's user account ${icon('arrow')}</a></p><p><a href="https://learn.microsoft.com/en-us/power-platform/release-plan/2026wave1/data-platform/create-dataverse-agent-users-entra-agent-identity" target="_blank" rel="noreferrer">Dataverse Agent users release plan ${icon('arrow')}</a><br><small>This release-plan page is archived and does not establish current availability.</small></p>
     </dialog>`;
@@ -126,18 +126,18 @@ function inspect(index: number, announce = false): void {
     line.setAttribute('x1', String(x)); line.setAttribute('x2', String(x));
     const dot = svg.querySelector('.selection-dot')!;
     dot.setAttribute('cx', String(x)); dot.setAttribute('cy', String(y));
-    svg.setAttribute('aria-label', `${metric.title}: ${day[metric.key]} on ${day.day} UTC. Synthetic. Use left and right arrow keys to inspect dates.`);
+    svg.setAttribute('aria-label', `${metric.title}: ${day[metric.key]} ${metric.key === 'users' ? 'on' : 'accumulated distinctly through'} ${day.day} UTC. Synthetic. Use left and right arrow keys to inspect dates.`);
   }
   document.querySelectorAll('[data-chart-date]').forEach(element => {
     element.textContent = `${dateLabel(day.day)}${day.day === source.asOf ? ' · today' : ''}`;
   });
   if (announce) document.querySelector('#day-announcement')!.textContent =
-    `${day.day} UTC: ${day.users} new Agent users, ${day.organizations} organizations, ${day.tenants} mapped tenants. Synthetic data.`;
+    `${day.day} UTC: ${day.users} daily new Agent users, ${day.organizations} accumulated distinct organizations, ${day.tenants} accumulated distinct mapped tenants. Synthetic data.`;
 }
 
 function downloadCsv(): void {
   const rows = data.daily.map((day: DailyMetric) => `${day.day},${day.users},${day.organizations},${day.tenants},synthetic`);
-  const blob = new Blob(['creation_date_utc,new_agent_users,organizations,mapped_tenants,data_mode\n' + rows.join('\n') + '\n'], { type: 'text/csv;charset=utf-8' });
+  const blob = new Blob(['date_utc,new_agent_users_daily,organizations_distinct_to_date,mapped_tenants_distinct_to_date,data_mode\n' + rows.join('\n') + '\n'], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url; link.download = `synthetic-agent-users-${data.daily[0].day}-to-${source.asOf}.csv`;
