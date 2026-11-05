@@ -2,10 +2,11 @@
 // Each private view must union all approved clusters for that source, apply
 // verified Agent-user detection filters, and expose Timestamp, OrganizationId,
 // AgentId. Do not filter for creation or require a creation correlation.
+set best_effort=false;
 let EndTime = now();
 // WRR: rolling past week, not the previous calendar week.
 let StartTime = EndTime - 7d;
-let SourceCounts =
+let SourceCounts = materialize(
     union
         (AuthenticationAgentSignals | extend Source = "authentication"),
         (ProvisioningAgentSignals | extend Source = "provisioning")
@@ -13,15 +14,40 @@ let SourceCounts =
     | project OrganizationId = tolower(OrganizationId),
               AgentId = tolower(AgentId), Source
     | where isnotempty(OrganizationId) and isnotempty(AgentId)
-    | summarize AgentSketch = hll(AgentId, 2) by OrganizationId, Source;
-SourceCounts
+    | summarize AgentSketch = hll(AgentId, 2),
+                PairSketch = hll(strcat(OrganizationId, "/", AgentId), 2)
+        by OrganizationId, Source
+);
+let GlobalAgents = toscalar(SourceCounts
+    | summarize Sketch = hll_merge(AgentSketch) | project dcount_hll(Sketch));
+let GlobalOrganizations = toscalar(SourceCounts
+    | summarize Sketch = hll(OrganizationId, 2) | project dcount_hll(Sketch));
+let SourcePairs = materialize(SourceCounts
+    | summarize Sketch = hll_merge(PairSketch) by Source
+    | project Source, Pairs = dcount_hll(Sketch));
+let AuthenticationPairs = toscalar(SourcePairs
+    | summarize Count = maxif(Pairs, Source == "authentication")
+    | project coalesce(Count, tolong(0)));
+let ProvisioningPairs = toscalar(SourcePairs
+    | summarize Count = maxif(Pairs, Source == "provisioning")
+    | project coalesce(Count, tolong(0)));
+let PerOrganization = materialize(SourceCounts
 | extend SourceAgents = dcount_hll(AgentSketch)
 | summarize AllAgentSketch = hll_merge(AgentSketch),
             AuthenticationDetectedAgents = maxif(SourceAgents, Source == "authentication"),
             ProvisioningDetectedAgents = maxif(SourceAgents, Source == "provisioning")
     by OrganizationId
-| project StartTime, EndTime, OrganizationId,
-          DistinctAgents = dcount_hll(AllAgentSketch),
-          AuthenticationDetectedAgents = coalesce(AuthenticationDetectedAgents, tolong(0)),
-          ProvisioningDetectedAgents = coalesce(ProvisioningDetectedAgents, tolong(0))
-| order by DistinctAgents desc, OrganizationId asc
+| project organizationId = OrganizationId, agents = dcount_hll(AllAgentSketch),
+          authentication = coalesce(AuthenticationDetectedAgents, tolong(0)),
+          provisioning = coalesce(ProvisioningDetectedAgents, tolong(0)));
+PerOrganization
+| order by agents desc, organizationId asc
+| summarize rows = make_list(bag_pack("organizationId", organizationId,
+    "agents", agents, "authentication", authentication, "provisioning", provisioning), 1048576),
+    rowCount = count()
+| project Snapshot = tostring(bag_pack(
+    "version", 1, "dataMode", "production", "countMethod", "approximate-hll2",
+    "coverage", "configured-source-groups", "startTime", StartTime, "endTime", EndTime,
+    "rows", rows, "rowCount", rowCount,
+    "totals", bag_pack("agents", GlobalAgents, "organizations", GlobalOrganizations,
+        "authenticationPairs", AuthenticationPairs, "provisioningPairs", ProvisioningPairs)))

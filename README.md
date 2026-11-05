@@ -4,7 +4,7 @@ A responsive, sample-data-first dashboard for **Dataverse Agent user creation tr
 
 The separate **Agents per organization** view shows illustrative Agent-user detections over the **past week (rolling 7 days / 168 hours) for WRR**, deduplicated across the whole week and both authentication and provisioning sources. It is not creation-based and does not change the existing creation trends.
 
-**Everything shown is synthetic. No Dataverse, Microsoft Graph, or production analytics queries are executed.** No credentials or environment configuration are required. Future security features are labeled Planned, not implemented.
+**By default, everything shown is synthetic.** An optional private production snapshot can replace **only Agents per organization**; creation charts, cumulative counts, daily tables, tenant mappings and CSV remain synthetic. Mixed mode is explicitly labeled. The application executes no Dataverse, Microsoft Graph or production analytics queries and stores no production credentials. Future security features are labeled Planned, not implemented.
 
 ## Run locally
 
@@ -65,6 +65,40 @@ The sample uses `{ timestamp, organizationId, agentId, source: 'authentication' 
 
 Fixtures include repeat detections across days, signals older than 24 hours, source overlap, shared identities across organizations and single-source identities. The detection view uses neither creation correlations nor tenant mappings and does not claim inventory completeness, sign-ins, or report reconciliation. The existing CSV export remains creation-trend-only; detection rows appear in their own accessible table.
 
+## Private production detection snapshots
+
+Run the approved seven-day detection query externally through authenticated, read-only analytics access. Use strict source-group expansion and fail on unavailable sources rather than silently accepting missing clusters. The public KQL template intentionally uses fictitious normalized views: adapt it **privately**, never by committing production infrastructure names or filters. It returns one `Snapshot` string containing JSON, including per-organization rows and independently merged global HLL totals. Save the **full cell value**, not the shortened grid preview, as a private JSON file **outside the repository**. Do not copy raw production rows, screenshots, exports or the operational query into this public repo.
+
+Create an ignored `.env.local` file with an absolute private snapshot path:
+
+```dotenv
+DETECTION_SNAPSHOT_PATH='C:\private-data\agent-detections.json'
+```
+
+Run or restart `npm run dev`, then open `http://127.0.0.1:5173/#detections`. `npm run preview` also supports the private endpoint when served through Vite. Do not expose either server on a network interface. A static file host does not implement this endpoint.
+
+The read-only `/api/detection-snapshot` endpoint accepts localhost requests only, serves with `Cache-Control: no-store`, validates the snapshot, and never copies it into build assets. Unconfigured local servers show explicitly labeled synthetic data. A configured missing or invalid snapshot produces an explicit error and **no detection counts**, not synthetic substitutes or zeros. Refreshing the page rereads the file; it does not rerun production queries. Keep `.env.local` and the private snapshot when resuming locally; neither is backed up by pushing the public branch.
+
+Snapshot contract (illustrative structure; all counts below are placeholders):
+
+```typescript
+{
+  version: 1;
+  dataMode: 'production';
+  countMethod: 'approximate-hll2';
+  coverage: 'configured-source-groups';
+  startTime: string; // UTC ISO timestamp, inclusive
+  endTime: string;   // UTC ISO timestamp, exclusive; exactly 168 hours later
+  rowCount: number;  // exact number of organization rows, used to reject truncation
+  rows: { organizationId: string; agents: number; authentication: number; provisioning: number }[];
+  totals: { agents: number; organizations: number; authenticationPairs: number; provisioningPairs: number };
+}
+```
+
+The table paginates 100 organizations at a time; it does not discard the remaining rows. Global cards use the query's merged sketches, **not sums of row estimates**. The approximate global organization estimate may differ from the exact number of organization rows. The window timestamps are fixed to snapshot execution, not page load; inspect the end timestamp before using it for WRR. Producing a new snapshot replaces the seven-day window. No incremental collector, scheduler, lifetime inventory or persistent identity history is implemented.
+
+Coverage means the **configured source groups**, not independently verified worldwide/sovereign-cloud coverage or complete telemetry. Query success cannot establish that every existing Agent-user identity generated one of the specified detection signals. These counts measure detected identities, not running/active agents or all existing identities.
+
 ## Architecture & later live integration
 
 | File | Responsibility |
@@ -72,6 +106,8 @@ Fixtures include repeat detections across days, signals older than 24 hours, sou
 | `src/sampleData.ts` | Synthetic provider and organization-details fixtures |
 | `src/analytics.ts` | Typed event/mapping contracts, correlation, exact distinct UTC aggregations |
 | `src/detections.ts` | Independent detection-window aggregation and exact per-organization/source deduplication |
+| `src/snapshot.ts` | Validates private production detection snapshots and preserves independently merged totals |
+| `vite.config.ts` | Read-only localhost snapshot endpoint; private path loaded only on the server |
 | `queries/agents-per-organization.kql` | Sanitized, approximate HLL per-organization query template |
 | `src/main.ts` | Dashboard rendering, date inspection, methodology and CSV |
 | `src/style.css` | Responsive styling, keyboard focus and reduced-motion support |
@@ -92,7 +128,7 @@ Fixtures include repeat detections across days, signals older than 24 hours, sou
 
 The sanitized organization-details mapping is `{ organizationId: string; tenantId: string | null }`. Production table/column names are deliberately not assumed. Mapping snapshots are not historical tenant membership.
 
-For future live integration, implement an authorized server-side adapter that normalizes verified sources to these contracts. Do not put production credentials or internal queries in browser code. Resolve organization-details schema, tenant authorization, identifier scoping, mapping freshness, retention, late events and correlation completeness first. Fetch correlation context outside the display window (or expand matching correlation IDs) before aggregation; an arbitrary one-day padding cannot guarantee complete correlations. Accumulated distinct user/organization/tenant queries must retain all available pre-range creation history (or an exact historical identity baseline), not filter to the display range before deduplicating. Keep the existing global source coverage, deduplicate identities across sources, and report the earliest available history and any gaps explicitly; do not imply lifetime completeness from retained telemetry. Expose completeness and unmapped/conflicting records explicitly. No live adapter, authentication, production query, or source-column detection is included in this version. This repository change does not modify any external production dashboard or email-report query.
+For future live integration, implement an authorized server-side adapter that normalizes verified sources to these contracts. Do not put production credentials or internal queries in browser code. Resolve organization-details schema, tenant authorization, identifier scoping, mapping freshness, retention, late events and correlation completeness first. Fetch correlation context outside the display window (or expand matching correlation IDs) before aggregation; an arbitrary one-day padding cannot guarantee complete correlations. Accumulated distinct user/organization/tenant queries must retain all available pre-range creation history (or an exact historical identity baseline), not filter to the display range before deduplicating. Keep the existing global source coverage, deduplicate identities across sources, and report the earliest available history and any gaps explicitly; do not imply lifetime completeness from retained telemetry. Expose completeness and unmapped/conflicting records explicitly. Only a private detection-snapshot reader is included; live authentication, query execution and creation-data import remain future work. This repository change does not modify any external production dashboard or email-report query.
 
 Google Fonts supplies DM Sans and Manrope when available; system sans-serif fallbacks work offline. There are no telemetry SDKs or analytics trackers.
 

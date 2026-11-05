@@ -1,5 +1,9 @@
 import { test, expect } from '@playwright/test';
 
+test.beforeEach(async ({ page }) => {
+  await page.route('**/api/detection-snapshot', route => route.fulfill({ status: 204 }));
+});
+
 test('default 90-day synthetic trends, inspection, range, CSV and methodology work', async ({ page }) => {
   await page.clock.install({ time: new Date('2026-10-23T18:19:58Z') });
   await page.goto('/');
@@ -105,4 +109,62 @@ test('WRR detection view deduplicates per organization across the past week and 
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(view.getByRole('table')).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test('production snapshot labels only detections as production and preserves global estimates across range changes', async ({ page }) => {
+  await page.clock.setFixedTime(new Date('2026-11-05T19:00:00Z'));
+  await page.route('**/api/detection-snapshot', route => route.fulfill({ json: {
+    version: 1, dataMode: 'production', countMethod: 'approximate-hll2', coverage: 'configured-source-groups',
+    startTime: '2026-10-29T17:00:00Z', endTime: '2026-11-05T17:00:00Z', rowCount: 2,
+    totals: { agents: 2, organizations: 2, authenticationPairs: 2, provisioningPairs: 2 },
+    rows: [
+      { organizationId: 'fixture-a', agents: 2, authentication: 1, provisioning: 2 },
+      { organizationId: 'fixture-b', agents: 1, authentication: 1, provisioning: 0 },
+    ],
+  } }));
+  await page.goto('/');
+  await expect(page.getByText('Production detection snapshot; synthetic creation trends.')).toBeVisible();
+  const view = page.locator('#detections');
+  await expect(view).toContainText('PRODUCTION SNAPSHOT');
+  await expect(view).toContainText('Approximate HLL counts');
+  await expect(view.locator('.kpi-value').first()).toHaveText('2');
+  await expect(view.locator('tbody tr')).toHaveCount(2);
+  await page.getByLabel('Trend date range').selectOption('7');
+  await expect(view.locator('.kpi-value').first()).toHaveText('2');
+  await expect(page.locator('.trend-chart').first()).toHaveAccessibleName(/synthetic/);
+});
+
+test('failed or malformed production snapshots show an explicit error, not sample or zero detections', async ({ page }) => {
+  await page.route('**/api/detection-snapshot', route => route.fulfill({ status: 503 }));
+  await page.goto('/');
+  await expect(page.getByRole('alert')).toContainText('No detection counts are shown');
+  await expect(page.locator('#detections .kpi-value')).toHaveCount(0);
+  await expect(page.locator('.trend-chart')).toHaveCount(4);
+  await page.route('**/api/detection-snapshot', route => route.fulfill({ json: { dataMode: 'production' } }));
+  await page.reload();
+  await expect(page.getByRole('alert')).toBeVisible();
+  await expect(page.locator('#detections tbody tr')).toHaveCount(0);
+});
+
+test('production organization pagination retains all rows and handles the final partial page', async ({ page }) => {
+  await page.clock.setFixedTime(new Date('2026-11-05T19:00:00Z'));
+  await page.route('**/api/detection-snapshot', route => route.fulfill({ json: {
+    version: 1, dataMode: 'production', countMethod: 'approximate-hll2', coverage: 'configured-source-groups',
+    startTime: '2026-10-29T17:00:00Z', endTime: '2026-11-05T17:00:00Z', rowCount: 101,
+    totals: { agents: 1, organizations: 101, authenticationPairs: 101, provisioningPairs: 0 },
+    rows: Array.from({ length: 101 }, (_, index) => ({
+      organizationId: `fixture-${String(index).padStart(3, '0')}`, agents: 1, authentication: 1, provisioning: 0,
+    })),
+  } }));
+  await page.goto('/');
+  await expect(page.locator('#detections tbody tr')).toHaveCount(100);
+  await expect(page.getByRole('button', { name: 'Previous organizations' })).toBeDisabled();
+  await page.getByRole('button', { name: 'Next organizations' }).click();
+  await expect(page.locator('#detections tbody tr')).toHaveCount(1);
+  await expect(page.locator('#detections tbody th')).toHaveText('fixture-100');
+  await expect(page.getByRole('button', { name: 'Next organizations' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Previous organizations' })).toBeFocused();
+  await page.getByRole('button', { name: 'Previous organizations' }).click();
+  await expect(page.locator('#detections tbody tr')).toHaveCount(100);
+  await expect(page.locator('#detections .kpi-value').first()).toHaveText('1');
 });
