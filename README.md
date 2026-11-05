@@ -4,7 +4,7 @@ A responsive, sample-data-first dashboard for **Dataverse Agent user creation tr
 
 The separate **Agents per organization** view shows illustrative Agent-user detections over the **past week (rolling 7 days / 168 hours) for WRR**, deduplicated across the whole week and both authentication and provisioning sources. It is not creation-based and does not change the existing creation trends.
 
-**By default, all counts shown are synthetic and WAU/call volume are unavailable.** An optional private production snapshot can replace **Agents per organization** and provide **observed weekly active Agent users (WAU)** and **weekly successful Agent call volume**; creation charts, cumulative counts, creation daily tables, tenant mappings and CSV remain synthetic. Mixed mode is explicitly labeled. The application executes no Dataverse, Microsoft Graph or production analytics queries and stores no production credentials. Future security features are labeled Planned, not implemented.
+**By default, all counts shown are synthetic and WAU/call volume/tenant attribution are unavailable.** An optional private production snapshot can replace **Agents per organization** and provide **observed weekly active Agent users (WAU)** and **weekly successful Agent call volume**; creation charts, cumulative counts, creation daily tables, tenant mappings and CSV remain synthetic. Mixed mode is explicitly labeled. The application executes no Dataverse, Microsoft Graph or production analytics queries and stores no production credentials. Future security features are labeled Planned, not implemented.
 
 ## Run locally
 
@@ -105,6 +105,14 @@ Snapshot contract (illustrative structure; all counts below are placeholders):
     missingRequestIds: 0; // nonzero or absent diagnostics reject the snapshot
     conflictingRequestIds: 0;
     daily: { day: string; calls: number }[]; // daily counts, not cumulative
+    byTenant?: {
+      mapping: 'organization-details';
+      asOf: string; // UTC mapping read time, not verified historical membership
+      rowCount: number; // exact number of mapped tenant rows
+      rows: { tenantId: string; calls: number }[];
+      unmappedCalls: number;
+      conflictingOrganizationMappings: 0;
+    };
   };
 }
 ```
@@ -135,6 +143,18 @@ Set `callVolume` to the returned object alongside `wau` and detection results fr
 
 Missing call-volume data is unavailable, not zero or inferred from WAU. A verified zero volume is shown as zero. Noninteger counts, invalid dates, incomplete buckets, unknown request-ID diagnostics or a weekly total inconsistent with the daily sum reject the snapshot. When both metrics are present, they must agree on whether successful activity occurred; WAU cannot change on a zero-call day. Preserve the last valid private snapshot after query failures or validation errors. “Exact” refers only to the observed request-ID count; telemetry gaps and the detected-cohort/batch exclusions may undercount total Agent traffic. No continuous refresh or historical weekly storage is implemented.
 
+## Where Agent calls come from: tenants
+
+The final chart attributes **the same deduplicated successful requests** to environment tenants via organization details. It does **not** use caller home-tenant IDs as a substitute, treat each organization as a separate tenant, infer customer names, or infer geographic origin. Multiple organizations can map to one tenant; their request volumes are combined. A left join preserves requests with missing mappings in **Unmapped calls**. Mapped tenant calls plus unmapped calls must equal the report-week volume.
+
+The shared sanitized query now also expects the fictitious `NormalizedOrganizationDetails` view with canonical `OrganizationId` and `TenantId` strings. Its private adapter must use the latest available organization-details snapshot per organization, resolve snapshot timestamps before presenting this normalized view, deduplicate repeated mappings, and reject conflicting nonempty tenant IDs at that snapshot. Do not arbitrarily pick a tenant or join all historical metadata rows. Actual source names and filters remain private. Current mappings do not establish historical ownership at call time; the mapping read timestamp is displayed.
+
+If a combined distributed query exceeds planning limits, the private export can use two stages: retain exact successful-call counts by organization from the same request aggregation that produced WAU and daily volume, then look up those organizations' current tenant mappings separately. Sum the disjoint organization call counts by their single resolved tenant, preserving unmapped counts. Verify both organization and tenant breakdowns reconcile to that run's weekly total before saving; never attach a breakdown from a different call-query run. Keep these intermediates outside the repository.
+
+The query embeds `byTenant` inside `CallVolume`, with exact row count, full tenant IDs, individual request counts, unmapped calls and zero-conflict diagnostics. The snapshot parser validates positive mapped counts, unique canonical tenant IDs, complete rows, read timestamp, mapping type and reconciliation to the existing weekly volume. Missing attribution is **unavailable**, not zero, sample-based, or inferred from unrelated caller fields. Nonzero conflicts or invalid/inconsistent attribution reject the snapshot; preserve the last valid private file.
+
+The chart ranks the **top 10 mapped tenants**, groups the rest as Other, and includes Unmapped where applicable. The table retains all mapped tenants, paginated 100 at a time, and always shows unmapped calls. Shares use **all weekly successful calls**, including unmapped calls, as the denominator. Chart labels may abbreviate tenant IDs on narrow screens; the table exposes full IDs. All categories reconcile to weekly volume; changing the creation date range does not affect attribution. Open `http://127.0.0.1:5173/#call-tenants` locally. Tenant identifiers and production rows must remain in the private snapshot, never committed or copied to public artifacts.
+
 ## Architecture & later live integration
 
 | File | Responsibility |
@@ -145,7 +165,7 @@ Missing call-volume data is unavailable, not zero or inferred from WAU. A verifi
 | `src/snapshot.ts` | Validates private detection/activity snapshots, aligned buckets, request-ID diagnostics and merged totals |
 | `vite.config.ts` | Read-only localhost snapshot endpoint; private path loaded only on the server |
 | `queries/agents-per-organization.kql` | Sanitized, approximate HLL per-organization query template |
-| `queries/observed-wau.kql` | Sanitized shared request eligibility, cohort join, within-week WAU and individual call volume |
+| `queries/observed-wau.kql` | Sanitized request eligibility, cohort join, WAU, call volume and environment-tenant attribution |
 | `src/main.ts` | Dashboard rendering, date inspection, methodology and CSV |
 | `src/style.css` | Responsive styling, keyboard focus and reduced-motion support |
 | `tests/analytics.test.ts` | Correlation, deduplication, mapping and date-boundary coverage |

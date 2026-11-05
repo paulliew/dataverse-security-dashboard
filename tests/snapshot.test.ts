@@ -128,6 +128,63 @@ test('call volume rejects partial request identities, unsupported scope, incompl
   }
 });
 
+const tenantFixture = () => ({
+  ...callFixture(),
+  rowCount: 3,
+  rows: [...fixture().rows, { organizationId: 'fixture-c', agents: 1, authentication: 1, provisioning: 0 }],
+  totals: { ...fixture().totals, organizations: 3, authenticationPairs: 3 },
+  callVolume: {
+    ...callFixture().callVolume,
+    byTenant: {
+      mapping: 'organization-details', asOf: '2026-11-05T18:00:00Z',
+      rowCount: 2, conflictingOrganizationMappings: 0, unmappedCalls: 2,
+      rows: [{ tenantId: 'fixture-tenant-b', calls: 4 }, { tenantId: ' FIXTURE-TENANT-A ', calls: 10 }],
+    },
+  },
+});
+
+test('tenant attribution preserves all calls, normalizes and ranks tenants, and distinguishes unmapped from unavailable', () => {
+  assert.equal(parseProductionSnapshot(callFixture()).callVolume!.byTenant, undefined);
+  const parsed = parseProductionSnapshot(tenantFixture());
+  const tenants = parsed.callVolume!.byTenant!;
+  assert.equal(tenants.rows[0].tenantId, 'fixture-tenant-a');
+  assert.equal(tenants.rows[0].calls, 10);
+  assert.equal(tenants.rows.reduce((sum, row) => sum + row.calls, tenants.unmappedCalls), 16);
+  assert.equal(parsed.wau!.agents, 2);
+  const unmapped = tenantFixture();
+  unmapped.callVolume.byTenant.rows = [];
+  unmapped.callVolume.byTenant.rowCount = 0;
+  unmapped.callVolume.byTenant.unmappedCalls = 16;
+  assert.equal(parseProductionSnapshot(unmapped).callVolume!.byTenant!.unmappedCalls, 16);
+  const zero = tenantFixture();
+  zero.callVolume.calls = 0;
+  zero.callVolume.daily.forEach(row => { row.calls = 0; });
+  zero.wau.agents = 0;
+  zero.wau.daily.forEach(row => { row.agents = 0; });
+  zero.callVolume.byTenant.rows = [];
+  zero.callVolume.byTenant.rowCount = 0;
+  zero.callVolume.byTenant.unmappedCalls = 0;
+  assert.equal(parseProductionSnapshot(zero).callVolume!.byTenant!.rows.length, 0);
+});
+
+test('tenant attribution rejects conflicting mappings, wrong attribution, truncated/duplicate rows and nonreconciling volumes', () => {
+  const base = tenantFixture().callVolume.byTenant;
+  for (const change of [
+    { mapping: 'caller-home-tenant' }, { conflictingOrganizationMappings: 1 }, { conflictingOrganizationMappings: undefined },
+    { asOf: 'invalid' }, { asOf: new Date(Date.now() + 120_000).toISOString() },
+    { rowCount: 3 }, { rowCount: undefined }, { unmappedCalls: 3 }, { unmappedCalls: -1 },
+    { rows: [base.rows[0], { ...base.rows[0], tenantId: 'FIXTURE-TENANT-B' }] },
+    { rows: [base.rows[0], { ...base.rows[1], tenantId: '' }] },
+    { rows: [base.rows[0], { ...base.rows[1], tenantId: '00000000-0000-0000-0000-000000000000' }] },
+    { rows: [base.rows[0], { ...base.rows[1], calls: 0 }] },
+    { rows: [base.rows[0], { ...base.rows[1], calls: .5 }] },
+  ]) {
+    assert.throws(() => parseProductionSnapshot({
+      ...tenantFixture(), callVolume: { ...tenantFixture().callVolume, byTenant: { ...base, ...change } },
+    }));
+  }
+});
+
 test('private snapshot endpoint is read-only, uncached and blocks cross-origin and invalid Host access', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'dashboard-snapshot-test-'));
   const path = join(directory, 'fixture.json');

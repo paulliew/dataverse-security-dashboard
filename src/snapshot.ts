@@ -9,6 +9,15 @@ export interface ObservedWau {
   daily: { day: string; agents: number }[];
 }
 
+export interface CallsByTenant {
+  mapping: 'organization-details';
+  asOf: string;
+  rowCount: number;
+  rows: { tenantId: string; calls: number }[];
+  unmappedCalls: number;
+  conflictingOrganizationMappings: 0;
+}
+
 export interface ObservedCallVolume {
   scope: 'detected-cohort-nonbatch-success';
   countMethod: 'distinct-request-ids';
@@ -16,6 +25,7 @@ export interface ObservedCallVolume {
   missingRequestIds: 0;
   conflictingRequestIds: 0;
   daily: { day: string; calls: number }[];
+  byTenant?: CallsByTenant;
 }
 
 export interface ProductionSnapshot extends DetectionCounts {
@@ -79,6 +89,34 @@ function parseObservedWau(value: unknown, startTime: string, endTime: string): O
   return { scope: 'detected-cohort-nonbatch-success', countMethod: 'approximate-hll2', agents, daily };
 }
 
+function parseCallsByTenant(value: unknown, calls: number): CallsByTenant {
+  const input = object(value);
+  if (input.mapping !== 'organization-details' || input.conflictingOrganizationMappings !== 0) {
+    throw new Error('Tenant attribution requires unambiguous organization-details mappings.');
+  }
+  const asOf = timestamp(input.asOf);
+  if (Date.parse(asOf) > Date.now() + 60_000) throw new Error('Tenant mapping read timestamp is in the future.');
+  if (!Array.isArray(input.rows) || input.rows.length !== count(input.rowCount)) {
+    throw new Error('Tenant attribution rows are missing or truncated.');
+  }
+  const ids = new Set<string>();
+  const rows = input.rows.map(value => {
+    const row = object(value);
+    if (typeof row.tenantId !== 'string' || !row.tenantId.trim()) throw new Error('Tenant attribution requires tenant IDs.');
+    const tenantId = row.tenantId.trim().toLowerCase();
+    if (tenantId === '00000000-0000-0000-0000-000000000000') throw new Error('Unset tenant IDs must be reported as unmapped.');
+    if (ids.has(tenantId)) throw new Error('Tenant attribution has duplicate tenant rows.');
+    ids.add(tenantId);
+    const calls = count(row.calls);
+    if (!calls) throw new Error('Mapped tenant rows must have positive call volumes.');
+    return { tenantId, calls };
+  }).sort((a, b) => b.calls - a.calls || a.tenantId.localeCompare(b.tenantId));
+  const unmappedCalls = count(input.unmappedCalls);
+  const total = rows.reduce((sum, row) => sum + row.calls, unmappedCalls);
+  if (!Number.isSafeInteger(total) || total !== calls) throw new Error('Mapped and unmapped tenant calls must reconcile with weekly call volume.');
+  return { mapping: 'organization-details', asOf, rowCount: rows.length, rows, unmappedCalls, conflictingOrganizationMappings: 0 };
+}
+
 function parseCallVolume(value: unknown, startTime: string, endTime: string): ObservedCallVolume {
   const input = object(value);
   if (input.scope !== 'detected-cohort-nonbatch-success' || input.countMethod !== 'distinct-request-ids') {
@@ -97,7 +135,8 @@ function parseCallVolume(value: unknown, startTime: string, endTime: string): Ob
   const sum = daily.reduce((total, row) => total + row.calls, 0);
   if (!Number.isSafeInteger(sum) || sum !== calls) throw new Error('Weekly call volume must equal the sum of daily calls.');
   return { scope: 'detected-cohort-nonbatch-success', countMethod: 'distinct-request-ids', calls,
-    missingRequestIds: 0, conflictingRequestIds: 0, daily };
+    missingRequestIds: 0, conflictingRequestIds: 0, daily,
+    ...(input.byTenant === undefined ? {} : { byTenant: parseCallsByTenant(input.byTenant, calls) }) };
 }
 
 export function parseProductionSnapshot(value: unknown): ProductionSnapshot {

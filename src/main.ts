@@ -33,6 +33,7 @@ let detectionError = '';
 let observedWau: ObservedWau | undefined;
 let callVolume: ObservedCallVolume | undefined;
 let detectionPage = 0;
+let tenantPage = 0;
 const detectionPageSize = 100;
 const escapeHtml = (value: string) => value.replace(/[&<>"']/g, character => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -156,11 +157,48 @@ function callVolumeChart(): string {
   </section>`;
 }
 
+function tenantCallsChart(): string {
+  const heading = '<div class="section-heading"><div><div class="eyebrow">WRR · TENANT ORIGINS</div><h2 id="call-tenants-title">Where Agent calls come from</h2><p>Successful calls attributed to environment tenants through organization details.</p></div></div>';
+  const volume = callVolume, attribution = volume?.byTenant;
+  if (!volume || !attribution) return `<section id="call-tenants" aria-labelledby="call-tenants-title">${heading}<p class="trend-note">Unavailable: no verified organization-to-tenant attribution loaded. Caller home tenants and sample mappings are not used as substitutes.</p></section>`;
+  const { rows, unmappedCalls } = attribution;
+  const wide = window.matchMedia('(min-width: 851px)').matches;
+  const width = wide ? 900 : 450, left = wide ? 290 : 150, right = 76, step = 30, top = 12;
+  const bars = rows.slice(0, 10).map(row => ({ label: row.tenantId, calls: row.calls, color: '#5779bb' }));
+  if (rows.length > 10) bars.push({ label: `Other mapped tenants (${rows.length - 10})`, calls: rows.slice(10).reduce((sum, row) => sum + row.calls, 0), color: '#92a6bd' });
+  if (unmappedCalls || !bars.length) bars.push({ label: 'Unmapped calls', calls: unmappedCalls, color: '#a77b43' });
+  const height = top + step * bars.length + 12;
+  const max = Math.max(1, ...bars.map(row => row.calls));
+  const share = (calls: number) => `${volume.calls ? (100 * calls / volume.calls).toFixed(1) : '0.0'}%`;
+  return `<section id="call-tenants" aria-labelledby="call-tenants-title">${heading}
+    <article class="chart-card" style="--series:#5779bb">
+      <div class="chart-heading"><div><div class="eyebrow">PRODUCTION SNAPSHOT · ORGANIZATION-DETAILS ATTRIBUTION</div><h2>Successful Agent calls by tenant</h2><p>Top 10 mapped tenants; remaining tenants grouped as Other</p></div><span class="chart-symbol">${icon('building')}</span></div>
+      <div class="chart-readout"><strong id="call-tenant-count">${format.format(rows.length)}</strong><span>mapped tenants · ${format.format(volume.calls)} successful calls in the report week</span></div>
+      <p class="range-caption">${detections.startTime} inclusive – ${detections.endTime} exclusive (UTC)</p>
+      <svg class="tenant-chart" viewBox="0 0 ${width} ${height}" role="img" aria-labelledby="tenant-svg-title" aria-describedby="tenant-svg-description">
+        <title id="tenant-svg-title">Successful Agent calls by environment tenant: ${format.format(rows.length)} mapped tenants</title>
+        <desc id="tenant-svg-description">Top ten tenants by call volume, with Other and Unmapped categories where needed. All chart categories reconcile with the weekly call total. Full tenant IDs and shares of all weekly calls are available in the table.</desc>
+        ${bars.map((row, index) => {
+          const y = top + index * step, barWidth = row.calls / max * (width - left - right);
+          const label = !wide && row.label.length > 20 ? `${row.label.slice(0, 8)}...${row.label.slice(-4)}` : row.label;
+          return `<text x="${left - 10}" y="${y + 15}" text-anchor="end">${escapeHtml(label)}</text><rect x="${left}" y="${y}" width="${barWidth}" height="22" rx="3" fill="${row.color}"><title>${escapeHtml(row.label)}: ${format.format(row.calls)} calls (${share(row.calls)})</title></rect><text x="${left + barWidth + 8}" y="${y + 15}">${format.format(row.calls)}</text>`;
+        }).join('')}
+      </svg>
+      <div class="chart-footer"><span><i class="legend-dot"></i>Mapped tenant calls + unmapped calls = weekly volume</span><span>UTC · production</span></div>
+    </article>
+    <p class="trend-note"><span id="unmapped-call-count">${format.format(unmappedCalls)}</span> unmapped calls (${share(unmappedCalls)} of all weekly calls) remain in the total, not attributed to a guessed tenant. Multiple organizations mapped to one tenant are combined; each request still counts once.</p>
+    <p class="trend-note">Tenant IDs identify the environment's owning tenant, not the caller's home tenant, customer name, or geographic location. Latest available organization-details mappings were read at ${attribution.asOf}; historical tenant membership is not verified. Same successful non-batch scope as WAU and weekly call volume.</p>
+    <div class="table-scroll"><table><caption>Production tenant call origins — full tenant IDs ranked by successful calls; share includes unmapped calls</caption><thead><tr><th scope="col">Tenant ID</th><th scope="col">Successful calls</th><th scope="col">Share of all weekly calls</th></tr></thead><tbody>${rows.slice(tenantPage * detectionPageSize, (tenantPage + 1) * detectionPageSize).map(row => `<tr><th scope="row">${escapeHtml(row.tenantId)}</th><td>${format.format(row.calls)}</td><td>${share(row.calls)}</td></tr>`).join('')}<tr class="unmapped-tenant"><th scope="row">Unmapped calls</th><td>${format.format(unmappedCalls)}</td><td>${share(unmappedCalls)}</td></tr></tbody></table></div>
+    ${rows.length > detectionPageSize ? `<div class="section-heading"><span class="range-caption">Mapped tenants ${format.format(tenantPage * detectionPageSize + 1)}–${format.format(Math.min((tenantPage + 1) * detectionPageSize, rows.length))} of ${format.format(rows.length)}</span><div><button class="button" id="tenant-previous" ${tenantPage === 0 ? 'disabled' : ''}>Previous tenants</button> <button class="button" id="tenant-next" ${(tenantPage + 1) * detectionPageSize >= rows.length ? 'disabled' : ''}>Next tenants</button></div></div>` : ''}
+  </section>`;
+}
+
 function render(): void {
   const root = document.querySelector<HTMLDivElement>('#app')!;
   const totals = data.totals;
   const coverage = totals.organizations ? Math.round((totals.organizations - totals.unmappedOrganizations) / totals.organizations * 100) : 0;
-  const productionViews = ['Agents per organization', ...(observedWau ? ['observed WAU'] : []), ...(callVolume ? ['weekly call volume'] : [])];
+  const productionViews = ['Agents per organization', ...(observedWau ? ['observed WAU'] : []), ...(callVolume ? ['weekly call volume'] : []), ...(callVolume?.byTenant ? ['tenant origins'] : [])];
+  const productionDescription = productionViews.length === 1 ? 'Only Agents per organization uses' : `${productionViews.slice(0, -1).join(', ')} and ${productionViews.at(-1)} use`;
   root.innerHTML = `
     <aside class="sidebar">
       <a class="brand" href="#main" aria-label="Dataverse security home"><span class="brand-mark">${icon('shield')}</span><span>dataverse<span class="brand-sub">SECURITY INTELLIGENCE</span></span></a>
@@ -176,7 +214,7 @@ function render(): void {
       <header class="topbar"><div class="breadcrumb">Workspace ${icon('chevron')} <span>Agent users</span></div><div class="topbar-right"><span class="sample-badge"><i></i> ${productionDetections ? 'MIXED DATA SOURCES' : 'SAMPLE DATA'}</span><span class="utc-label">All times UTC</span></div></header>
       <main id="main">
         <div class="page-heading"><div><div class="eyebrow">IDENTITY & ACCESS / AGENT USERS</div><h1>Agent users<span class="title-dot">.</span></h1><p>Understand adoption. Follow creation trends. See the bigger picture.</p></div><button class="button export-button" id="export">${icon('download')} Export CSV</button></div>
-        <div class="sample-banner">${icon('info')}<p><strong>${productionDetections ? `Production ${callVolume ? 'activity' : `detection${observedWau ? ' and WAU' : ''}`} snapshot; synthetic creation trends.` : "You're exploring synthetic sample data."}</strong> ${productionDetections ? `${productionViews.length === 1 ? 'Only Agents per organization uses' : productionViews.join(' and ') + ' use'} production results. No continuous refresh.` : 'Creation trends and a separate detection view; not live usage or security posture.'}</p><button data-methodology>How it works ${icon('arrow')}</button></div>
+        <div class="sample-banner">${icon('info')}<p><strong>${productionDetections ? `Production ${callVolume ? 'activity' : `detection${observedWau ? ' and WAU' : ''}`} snapshot; synthetic creation trends.` : "You're exploring synthetic sample data."}</strong> ${productionDetections ? `${productionDescription} production results. No continuous refresh.` : 'Creation trends and a separate detection view; not live usage or security posture.'}</p><button data-methodology>How it works ${icon('arrow')}</button></div>
         <section class="range-toolbar" aria-label="Date range"><div><span class="section-kicker">CREATION OVERVIEW</span><span class="range-caption">${dateLabel(data.daily[0].day, true)} – ${dateLabel(source.asOf, true)}</span></div><label class="range-select">${icon('calendar')}<select id="range" aria-label="Trend date range"><option value="90" ${range === 90 ? 'selected' : ''}>90 days ago through today</option><option value="30" ${range === 30 ? 'selected' : ''}>30 days ago through today</option><option value="7" ${range === 7 ? 'selected' : ''}>7 days ago through today</option></select></label></section>
         <section class="kpi-grid" aria-label="Agent users in selected period; organizations and tenants accumulated through today">
           ${metrics.map(metric => `<article class="kpi"><div class="kpi-label">${metric.title}${icon(metric.icon)}</div><div class="kpi-value">${format.format(totals[metric.key])}</div><div class="kpi-note"><span class="mini-dot" style="background:${metric.color}"></span>${metric.key === 'users' ? 'Distinct across selected period' : 'Available-history distinct to date'}</div></article>`).join('')}
@@ -206,6 +244,7 @@ function render(): void {
         </section>
         ${wauChart()}
         ${callVolumeChart()}
+        ${tenantCallsChart()}
         <footer class="page-footer"><span>${icon('shield')} Dataverse security intelligence</span><span>${productionDetections ? 'Production activity snapshot · creation trends synthetic · no continuous refresh' : `Synthetic dataset · generated for ${source.asOf} UTC · no live connection`}</span></footer>
         <p id="day-announcement" class="sr-only" aria-live="polite"></p>
       </main>
@@ -217,6 +256,7 @@ function render(): void {
       <h3>From correlated events to daily and to-date counts</h3><p>A qualifying correlation needs an Agent user identification with a user and organization ID, a creation event, and an apply-user or force-sync operation. Correlations are resolved before date filtering and assigned to the earliest creation-event timestamp in UTC, including when detection happened on a different day.</p>
       <h3>Observed weekly active Agent users (WAU)</h3><p>WAU requires at least one successful non-batch request on qualifying Dataverse API/SDK routes during the same report window. HTTP 2xx except 202 and error code 0 are required. Batch requests, ExecuteMultiple and ExecuteTransaction are excluded until child-result semantics are verified. Callers are joined to the same-week detected Agent-user cohort by both organization and Entra user object ID, then counted distinctly across all organizations and days. Successful requests by callers outside that cohort are not classified as Agent activity. This is an observed subset, not a complete inventory-based WAU. The chart accumulates successful callers from the window start; the last point is that week's WAU, not a sum of daily distincts or a trend of independent rolling seven-day totals. No WAU snapshot means unavailable, never zero or a detection-based fallback.</p>
       <h3>Weekly Agent call volume</h3><p>Call volume uses the same successful non-batch eligibility, detected cohort and report week as WAU, but counts individual requests. Duplicate telemetry for the same organization/request ID is counted once, at its earliest completion time. Distinct requests by one Agent user count separately. Daily counts sum to the weekly total; these are not cumulative bars or historical weekly totals. The private adapter must provide a verified server-generated request ID. Missing IDs or IDs associated with conflicting caller identities reject the snapshot, rather than producing a partial volume. Missing call-volume data is unavailable, not zero or inferred from WAU. Counts are exact for observed request IDs, not a claim of complete telemetry.</p>
+      <h3>Which tenants calls come from</h3><p>Deduplicated successful requests are attributed to environment tenants by joining organization IDs to the latest available organization-details mappings. Multiple organizations can map to one tenant; duplicate mapping rows cannot multiply calls. Conflicting nonempty mappings reject the snapshot. Unmapped calls stay visible and in the weekly total. Tenant call volumes plus unmapped calls must equal weekly volume. These are tenant IDs, not verified customer names, caller home tenants or geographic origins. The chart shows the top ten tenants plus Other and Unmapped where applicable; the paginated table retains every mapped tenant. Mapping read time is shown; historical tenant ownership at call time is not established. Missing attribution is unavailable, never synthetic or inferred from caller identity.</p>
       <p><strong>New Agent users:</strong> distinct created user object IDs within each UTC date, with a selected-period distinct card. <strong>Cumulative Agent users:</strong> distinct created user object IDs across all available history through each date, deduplicated across organizations, correlations and dates. This is not a running sum of daily user counts. <strong>Organizations:</strong> accumulated distinct organization IDs on qualifying creations through the end of each date. <strong>Tenants:</strong> accumulated distinct tenant IDs resolved from those organizations through each date. Organization and tenant cards show these counts through today; they do not reset when the visible range changes. Repeated identities are counted once, never summed from daily distincts. Duplicate mappings don't multiply counts; conflicting mappings cause an explicit error. Missing mappings don't reduce user or organization counts.</p>
       <h3>Range & sample limitations</h3><p>The default starts 90 UTC dates before today and includes today: 91 daily buckets. Cumulative user, organization and tenant counts include all available history before the selected range, starting ${dateLabel(source.historyStart, true)} in this synthetic dataset. This is available-history accumulation, not a verified lifetime inventory or currently enabled population. A date without creations has zero new users and carries forward accumulated counts. Today is an illustrative sample, not a complete observed day. In a future live adapter, unavailable telemetry must be marked unknown, not assumed zero, and historical coverage must be reported explicitly.</p>
       <p>The application executes no production query and holds no production credentials. Detection snapshots are loaded through a read-only localhost endpoint from a private file outside the repository. Creation-event and organization-to-tenant contracts remain illustrative, not a verified production schema. Correlation completeness, telemetry retention and mapping freshness remain future work.</p>
@@ -259,6 +299,7 @@ function downloadCsv(): void {
 }
 
 function bindEvents(): void {
+  bindTenantPagination();
   for (const [id, delta] of [['detection-previous', -1], ['detection-next', 1]] as const) {
     document.getElementById(id)?.addEventListener('click', () => {
       detectionPage = Math.max(0, Math.min(Math.ceil(detections.rows.length / detectionPageSize) - 1, detectionPage + delta));
@@ -294,6 +335,19 @@ function bindEvents(): void {
   document.querySelectorAll('[data-methodology]').forEach(button => button.addEventListener('click', () => dialog.showModal()));
   document.querySelector('#close-dialog')!.addEventListener('click', () => dialog.close());
   dialog.addEventListener('click', event => { if (event.target === dialog) dialog.close(); });
+}
+
+function bindTenantPagination(): void {
+  for (const [id, delta] of [['tenant-previous', -1], ['tenant-next', 1]] as const) {
+    document.getElementById(id)?.addEventListener('click', () => {
+      const rows = callVolume!.byTenant!.rows;
+      tenantPage = Math.max(0, Math.min(Math.ceil(rows.length / detectionPageSize) - 1, tenantPage + delta));
+      render();
+      const button = document.getElementById(id) as HTMLButtonElement | null;
+      if (button && !button.disabled) button.focus();
+      else document.getElementById(delta === 1 ? 'tenant-previous' : 'tenant-next')?.focus();
+    });
+  }
 }
 
 function bindChartEvents(): void {
@@ -335,12 +389,13 @@ async function initialize(): Promise<void> {
     for (const [index, metric] of chartMetrics.entries()) {
       document.querySelector(`[data-metric="${metric.key}"]`)!.closest('.chart-card')!.outerHTML = chart(metric, index);
     }
-    for (const [id, draw] of [['wau', wauChart], ['call-volume', callVolumeChart]] as const) {
+    for (const [id, draw] of [['wau', wauChart], ['call-volume', callVolumeChart], ['call-tenants', tenantCallsChart]] as const) {
       const dataOpen = document.querySelector<HTMLDetailsElement>(`#${id} details`)?.open;
       document.getElementById(id)!.outerHTML = draw();
       const details = document.querySelector<HTMLDetailsElement>(`#${id} details`);
       if (details) details.open = Boolean(dataOpen);
     }
+    bindTenantPagination();
     bindChartEvents();
   });
 }

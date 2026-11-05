@@ -35,6 +35,24 @@ let UniqueCalls=materialize(SuccessfulRequests
 let ConflictingRequestIds=toscalar(UniqueCalls
     | summarize Conflicts=countif(array_length(Callers)>1) | project Conflicts);
 let WeeklyCalls=toscalar(UniqueCalls | count);
+// The private adapter supplies current organization-details mappings, not caller home tenants.
+let TenantCandidates=materialize(NormalizedOrganizationDetails
+    | project OrganizationId=tolower(OrganizationId),TenantId=tolower(trim(@"\s+",TenantId))
+    | where isnotempty(OrganizationId) and isnotempty(TenantId)
+    | where TenantId != "00000000-0000-0000-0000-000000000000"
+    | join kind=leftsemi (UniqueCalls | distinct OrganizationId) on OrganizationId
+    | summarize Tenants=make_set(TenantId,2) by OrganizationId);
+let ConflictingOrganizationMappings=toscalar(TenantCandidates
+    | summarize Conflicts=countif(array_length(Tenants)>1) | project Conflicts);
+let AttributedCalls=materialize(UniqueCalls
+    | join kind=leftouter (TenantCandidates | where array_length(Tenants)==1
+        | project OrganizationId,TenantId=tostring(Tenants[0])) on OrganizationId);
+let UnmappedCalls=toscalar(AttributedCalls | where isempty(TenantId) | count);
+let TenantCounts=materialize(AttributedCalls
+    | where isnotempty(TenantId) | summarize calls=count() by tenantId=TenantId);
+let TenantRowCount=toscalar(TenantCounts | count);
+let TenantRows=toscalar(TenantCounts | order by calls desc,tenantId asc
+    | summarize Rows=make_list(bag_pack("tenantId",tenantId,"calls",calls),1048576) | project Rows);
 let Wau=toscalar(SuccessfulCallDays
     | summarize Sketch=hll(AgentId,2) | project dcount_hll(Sketch));
 let LastDate=startofday(iff(EndTime==startofday(EndTime),EndTime-1s,EndTime));
@@ -64,4 +82,6 @@ print Wau=tostring(bag_pack("scope","detected-cohort-nonbatch-success",
     "countMethod","approximate-hll2","agents",Wau,"daily",Daily)),
     CallVolume=tostring(bag_pack("scope","detected-cohort-nonbatch-success",
         "countMethod","distinct-request-ids","calls",WeeklyCalls,"daily",CallDaily,
-        "missingRequestIds",MissingRequestIds,"conflictingRequestIds",ConflictingRequestIds))
+        "missingRequestIds",MissingRequestIds,"conflictingRequestIds",ConflictingRequestIds,
+        "byTenant",bag_pack("mapping","organization-details","asOf",now(),"rowCount",TenantRowCount,
+            "rows",TenantRows,"unmappedCalls",UnmappedCalls,"conflictingOrganizationMappings",ConflictingOrganizationMappings)))

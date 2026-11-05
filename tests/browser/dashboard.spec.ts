@@ -208,6 +208,8 @@ test('missing successful-call data is unavailable, not zero and not inferred fro
   await expect(page.locator('.wau-chart')).toHaveCount(0);
   await expect(page.locator('#call-volume')).toContainText('Unavailable: no verified call-volume snapshot loaded');
   await expect(page.locator('#call-volume-value')).toHaveCount(0);
+  await expect(page.locator('#call-tenants')).toContainText('Unavailable: no verified organization-to-tenant attribution loaded');
+  await expect(page.locator('#call-tenant-count')).toHaveCount(0);
 });
 
 test('weekly call volume shows individual daily requests, a weekly total and accessible responsive data independently of WAU', async ({ page }) => {
@@ -228,6 +230,7 @@ test('weekly call volume shows individual daily requests, a weekly total and acc
   await page.route('**/api/detection-snapshot', route => route.fulfill({ json: snapshot }));
   await page.goto('/');
   await expect(page.locator('#call-volume-value')).toHaveText('16');
+  await expect(page.locator('#call-tenants')).toContainText('Caller home tenants and sample mappings are not used as substitutes');
   await expect(page.locator('.volume-chart')).toHaveAccessibleName('Weekly Agent call volume: 16 successful calls');
   await expect(page.locator('.volume-chart rect')).toHaveCount(8);
   await expect(page.locator('#wau-value')).toHaveText('≈2');
@@ -251,4 +254,72 @@ test('weekly call volume shows individual daily requests, a weekly total and acc
   await page.reload();
   await expect(page.locator('#call-volume-value')).toHaveText('0');
   await expect(page.locator('.volume-chart')).toBeVisible();
+});
+
+test('tenant origins reconcile call totals, expose full IDs, include Other/unmapped and retain paginated rows after resize', async ({ page }) => {
+  await page.clock.setFixedTime(new Date('2026-11-05T19:00:00Z'));
+  const daily = Array.from({ length: 8 }, (_, index) => ({
+    day: new Date(Date.UTC(2026, 9, 29 + index)).toISOString().slice(0, 10), calls: index === 0 ? 10 : index === 7 ? 6 : 0,
+  }));
+  const snapshot = {
+    version: 1, dataMode: 'production', countMethod: 'approximate-hll2', coverage: 'configured-source-groups',
+    startTime: '2026-10-29T17:00:00Z', endTime: '2026-11-05T17:00:00Z', rowCount: 4,
+    totals: { agents: 3, organizations: 4, authenticationPairs: 5, provisioningPairs: 0 },
+    rows: Array.from({ length: 4 }, (_, index) => ({
+      organizationId: `fixture-org-${index}`, agents: index === 2 ? 2 : 1, authentication: index === 2 ? 2 : 1, provisioning: 0,
+    })),
+    wau: { scope: 'detected-cohort-nonbatch-success', countMethod: 'approximate-hll2', agents: 2,
+      daily: daily.map(row => ({ day: row.day, agents: row.calls === 6 ? 2 : 1 })) },
+    callVolume: { scope: 'detected-cohort-nonbatch-success', countMethod: 'distinct-request-ids',
+      calls: 16, missingRequestIds: 0, conflictingRequestIds: 0, daily,
+      byTenant: { mapping: 'organization-details', asOf: '2026-11-05T18:00:00Z', rowCount: 2,
+        conflictingOrganizationMappings: 0, unmappedCalls: 2,
+        rows: [{ tenantId: 'fixture-tenant-a', calls: 10 }, { tenantId: 'fixture-tenant-b', calls: 4 }] } },
+  };
+  await page.route('**/api/detection-snapshot', route => route.fulfill({ json: snapshot }));
+  await page.goto('/');
+  await expect(page.locator('#call-tenant-count')).toHaveText('2');
+  await expect(page.locator('.tenant-chart')).toHaveAccessibleName('Successful Agent calls by environment tenant: 2 mapped tenants');
+  await expect(page.locator('#unmapped-call-count')).toHaveText('2');
+  await expect(page.locator('#call-tenants tbody tr').first()).toContainText('fixture-tenant-a');
+  await expect(page.locator('#call-tenants tbody tr').first()).toContainText('62.5%');
+  await expect(page.locator('#call-volume-value')).toHaveText('16');
+  await expect(page.locator('#wau-value')).toHaveText('≈2');
+  await page.getByLabel('Trend date range').selectOption('7');
+  await expect(page.locator('#call-tenant-count')).toHaveText('2');
+  snapshot.callVolume.byTenant.rows = Array.from({ length: 121 }, (_, index) => ({
+    tenantId: `fixture-tenant-${String(index).padStart(3, '0')}`, calls: 1,
+  }));
+  snapshot.callVolume.byTenant.rowCount = 121;
+  snapshot.callVolume.byTenant.unmappedCalls = 1;
+  snapshot.callVolume.calls = 122;
+  snapshot.callVolume.daily.forEach((row, index) => { row.calls = index ? 0 : 122; });
+  snapshot.wau.daily.forEach(row => { row.agents = 2; });
+  snapshot.rowCount = 122;
+  snapshot.rows = Array.from({ length: 122 }, (_, index) => ({
+    organizationId: `fixture-org-${index}`, agents: index ? 1 : 2, authentication: index ? 1 : 2, provisioning: 0,
+  }));
+  snapshot.totals.organizations = 122;
+  snapshot.totals.authenticationPairs = 123;
+  await page.reload();
+  await expect(page.locator('#call-tenant-count')).toHaveText('121');
+  await expect(page.locator('.tenant-chart rect')).toHaveCount(12);
+  await expect(page.locator('.tenant-chart')).toContainText('Other mapped tenants (111)');
+  await expect(page.locator('#call-tenants tbody tr')).toHaveCount(101);
+  await page.getByRole('button', { name: 'Next tenants', exact: true }).click();
+  await expect(page.locator('#call-tenants tbody tr')).toHaveCount(22);
+  await expect(page.locator('#call-tenants tbody tr').nth(20)).toContainText('fixture-tenant-120');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator('.tenant-chart')).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.getByRole('button', { name: 'Previous tenants', exact: true }).click();
+  await expect(page.locator('#call-tenants tbody tr')).toHaveCount(101);
+  snapshot.callVolume.byTenant.rows = [];
+  snapshot.callVolume.byTenant.rowCount = 0;
+  snapshot.callVolume.byTenant.unmappedCalls = 122;
+  await page.reload();
+  await expect(page.locator('#call-tenant-count')).toHaveText('0');
+  await expect(page.locator('#unmapped-call-count')).toHaveText('122');
+  await expect(page.locator('#call-volume-value')).toHaveText('122');
+  await expect(page.locator('#call-tenants tbody tr')).toHaveCount(1);
 });
