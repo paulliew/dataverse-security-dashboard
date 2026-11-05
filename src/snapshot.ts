@@ -1,12 +1,21 @@
 import type { aggregateDetections } from './detections.ts';
+import { daysBefore } from './analytics.ts';
 
 type DetectionCounts = ReturnType<typeof aggregateDetections>;
+export interface ObservedWau {
+  scope: 'detected-cohort-nonbatch-success';
+  countMethod: 'approximate-hll2';
+  agents: number;
+  daily: { day: string; agents: number }[];
+}
+
 export interface ProductionSnapshot extends DetectionCounts {
   version: 1;
   dataMode: 'production';
   countMethod: 'approximate-hll2';
   coverage: 'configured-source-groups';
   rowCount: number;
+  wau?: ObservedWau;
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -26,6 +35,29 @@ function timestamp(value: unknown): string {
     || !Number.isFinite(Date.parse(value))
     || new Date(value).toISOString().slice(0, 19) !== value.slice(0, 19)) throw new Error('Snapshot requires valid UTC timestamps.');
   return value;
+}
+
+function parseObservedWau(value: unknown, startTime: string, endTime: string): ObservedWau {
+  const input = object(value);
+  if (input.scope !== 'detected-cohort-nonbatch-success' || input.countMethod !== 'approximate-hll2') {
+    throw new Error('Unsupported observed WAU scope.');
+  }
+  const endDay = endTime.slice(0, 10);
+  const lastDay = /T00:00:00(?:\.0{1,7})?Z$/.test(endTime) ? daysBefore(endDay, 1) : endDay;
+  const days: string[] = [];
+  for (let day = startTime.slice(0, 10); day <= lastDay; day = daysBefore(day, -1)) days.push(day);
+  if (!Array.isArray(input.daily) || input.daily.length !== days.length) {
+    throw new Error('Observed WAU daily coverage is incomplete.');
+  }
+  const daily = input.daily.map((value, index) => {
+    const row = object(value);
+    const day = typeof row.day === 'string' ? row.day.replace(/T00:00:00(?:\.0{1,7})?Z$/, '') : undefined;
+    if (day !== days[index]) throw new Error('Observed WAU dates must align with the snapshot window.');
+    return { day: days[index], agents: count(row.agents) };
+  });
+  const agents = count(input.agents);
+  if (daily.at(-1)!.agents !== agents) throw new Error('Observed WAU total must equal the final within-week cumulative estimate.');
+  return { scope: 'detected-cohort-nonbatch-success', countMethod: 'approximate-hll2', agents, daily };
 }
 
 export function parseProductionSnapshot(value: unknown): ProductionSnapshot {
@@ -57,5 +89,6 @@ export function parseProductionSnapshot(value: unknown): ProductionSnapshot {
       agents: count(totals.agents), organizations: count(totals.organizations),
       authenticationPairs: count(totals.authenticationPairs), provisioningPairs: count(totals.provisioningPairs),
     },
+    ...(input.wau === undefined ? {} : { wau: parseObservedWau(input.wau, startTime, endTime) }),
   };
 }

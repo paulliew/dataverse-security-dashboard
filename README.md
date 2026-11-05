@@ -4,7 +4,7 @@ A responsive, sample-data-first dashboard for **Dataverse Agent user creation tr
 
 The separate **Agents per organization** view shows illustrative Agent-user detections over the **past week (rolling 7 days / 168 hours) for WRR**, deduplicated across the whole week and both authentication and provisioning sources. It is not creation-based and does not change the existing creation trends.
 
-**By default, everything shown is synthetic.** An optional private production snapshot can replace **only Agents per organization**; creation charts, cumulative counts, daily tables, tenant mappings and CSV remain synthetic. Mixed mode is explicitly labeled. The application executes no Dataverse, Microsoft Graph or production analytics queries and stores no production credentials. Future security features are labeled Planned, not implemented.
+**By default, all counts shown are synthetic and WAU is unavailable.** An optional private production snapshot can replace **Agents per organization** and provide **observed weekly active Agent users (WAU)**; creation charts, cumulative counts, creation daily tables, tenant mappings and CSV remain synthetic. Mixed mode is explicitly labeled. The application executes no Dataverse, Microsoft Graph or production analytics queries and stores no production credentials. Future security features are labeled Planned, not implemented.
 
 ## Run locally
 
@@ -67,7 +67,7 @@ Fixtures include repeat detections across days, signals older than 24 hours, sou
 
 ## Private production detection snapshots
 
-Run the approved seven-day detection query externally through authenticated, read-only analytics access. Use strict source-group expansion and fail on unavailable sources rather than silently accepting missing clusters. The public KQL template intentionally uses fictitious normalized views: adapt it **privately**, never by committing production infrastructure names or filters. It returns one `Snapshot` string containing JSON, including per-organization rows and independently merged global HLL totals. Save the **full cell value**, not the shortened grid preview, as a private JSON file **outside the repository**. Do not copy raw production rows, screenshots, exports or the operational query into this public repo.
+Run the approved seven-day detection query externally through authenticated, read-only analytics access. Use strict source-group expansion and fail on unavailable sources rather than silently accepting missing clusters. The public KQL templates intentionally use fictitious normalized views: adapt them **privately**, never by committing production infrastructure names or filters. The detection template returns one `Snapshot` string containing JSON, including per-organization rows and independently merged global HLL totals. Save the **full cell value**, not the shortened grid preview, as a private JSON file **outside the repository**. Do not copy raw production rows, screenshots, exports or the operational query into this public repo.
 
 Create an ignored `.env.local` file with an absolute private snapshot path:
 
@@ -92,12 +92,30 @@ Snapshot contract (illustrative structure; all counts below are placeholders):
   rowCount: number;  // exact number of organization rows, used to reject truncation
   rows: { organizationId: string; agents: number; authentication: number; provisioning: number }[];
   totals: { agents: number; organizations: number; authenticationPairs: number; provisioningPairs: number };
+  wau?: {
+    scope: 'detected-cohort-nonbatch-success';
+    countMethod: 'approximate-hll2';
+    agents: number; // distinct successful callers over the full report week
+    daily: { day: string; agents: number }[]; // within-week cumulative estimates
+  };
 }
 ```
 
 The table paginates 100 organizations at a time; it does not discard the remaining rows. Global cards use the query's merged sketches, **not sums of row estimates**. The approximate global organization estimate may differ from the exact number of organization rows. The window timestamps are fixed to snapshot execution, not page load; inspect the end timestamp before using it for WRR. Producing a new snapshot replaces the seven-day window. No incremental collector, scheduler, lifetime inventory or persistent identity history is implemented.
 
 Coverage means the **configured source groups**, not independently verified worldwide/sovereign-cloud coverage or complete telemetry. Query success cannot establish that every existing Agent-user identity generated one of the specified detection signals. These counts measure detected identities, not running/active agents or all existing identities.
+
+## Observed weekly active Agent users (WAU)
+
+The separate WAU chart requires **positive evidence of at least one successful, non-batch Dataverse API call** during the report week. It does not derive activity from detection counts. The user-approved initial scope is the **same-week detected cohort**: join request callers to qualifying detected identities on **both organization ID and Entra user object ID**, then deduplicate user IDs globally across organizations, requests and dates. Human/application users and successful callers without a matching Agent-user detection are not classified as Agent activity. This is an observed subset, not a complete inventory-based WAU.
+
+[`queries/observed-wau.kql`](queries/observed-wau.kql) is a sanitized template for fictitious `DetectedAgentUsers` and `DataverseRequestCompletions` views. The latter exposes `Timestamp`, `OrganizationId`, `CallerObjectId`, `HttpStatus`, `ErrorCode`, `RequestPath`, `BatchSize` and `OperationName`, normalized from verified request-completion telemetry by a private adapter. Success requires HTTP status 200–299 **except 202**, error code 0, and a qualifying Dataverse Web API or organization-service route. Only non-batch requests (`BatchSize == 0`, no `$batch` path) qualify. `ExecuteMultiple` and `ExecuteTransaction` are excluded until child-result semantics are verified. HTTP failures, missing/unparseable status, unknown error codes, asynchronous acceptance, unrelated routes, unmatched identities and unsupported batch calls do not contribute. A successful response is not proof of completed business tasks.
+
+Execute detection and successful-call queries with **the same exact start/end timestamps and detected cohort**, using strict configured-source coverage. Extend the private snapshot with the returned `wau` object; do not merge different report weeks or infer WAU from a global HTTP success count. Requerying detection sources recomputes the cohort and can change an earlier snapshot's counts if underlying telemetry changes; preserve both metrics together from one run. Sketches use accuracy 2 and are merged before estimating distinct users. Never sum daily, per-source or per-organization distinct estimates.
+
+The curve shows **distinct successful callers accumulated inside this one report week**, through each intersecting UTC date. Its last point equals the week's observed WAU. It is not a historical series of independent rolling seven-day WAU values. Because the window is exactly 168 hours rather than UTC-calendar-aligned, it usually intersects eight dates, with partial first/last dates; a midnight-aligned window intersects seven. Snapshot day values accept UTC `YYYY-MM-DD` dates or equivalent UTC-midnight ISO timestamps from analytics JSON serialization, normalized to date-only labels. The chart includes an accessible data table and is independent of the creation date-range controls.
+
+If `wau` is missing, the chart is explicitly **unavailable**, not zero, synthetic, or replaced by the detection count. A valid zero-valued successful-call result is distinct from unavailable data. Invalid/misaligned dates or a final estimate inconsistent with the weekly total reject the snapshot. Query timeouts, missing sources and partial/truncated results must not overwrite the last valid private snapshot or be presented as observed zeros. Telemetry gaps, missing request caller IDs, identities not detected that week and batch/async exclusions may undercount WAU.
 
 ## Architecture & later live integration
 
@@ -109,6 +127,7 @@ Coverage means the **configured source groups**, not independently verified worl
 | `src/snapshot.ts` | Validates private production detection snapshots and preserves independently merged totals |
 | `vite.config.ts` | Read-only localhost snapshot endpoint; private path loaded only on the server |
 | `queries/agents-per-organization.kql` | Sanitized, approximate HLL per-organization query template |
+| `queries/observed-wau.kql` | Sanitized successful-call eligibility, cohort join and within-week WAU accumulation |
 | `src/main.ts` | Dashboard rendering, date inspection, methodology and CSV |
 | `src/style.css` | Responsive styling, keyboard focus and reduced-motion support |
 | `tests/analytics.test.ts` | Correlation, deduplication, mapping and date-boundary coverage |

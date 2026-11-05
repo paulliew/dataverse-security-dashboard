@@ -168,3 +168,42 @@ test('production organization pagination retains all rows and handles the final 
   await expect(page.locator('#detections tbody tr')).toHaveCount(100);
   await expect(page.locator('#detections .kpi-value').first()).toHaveText('1');
 });
+
+test('observed WAU uses a separate production curve and accessible data without changing detection or creation metrics', async ({ page }) => {
+  await page.clock.setFixedTime(new Date('2026-11-05T19:00:00Z'));
+  await page.route('**/api/detection-snapshot', route => route.fulfill({ json: {
+    version: 1, dataMode: 'production', countMethod: 'approximate-hll2', coverage: 'configured-source-groups',
+    startTime: '2026-10-29T17:00:00Z', endTime: '2026-11-05T17:00:00Z', rowCount: 1,
+    totals: { agents: 3, organizations: 1, authenticationPairs: 3, provisioningPairs: 0 },
+    rows: [{ organizationId: 'fixture-a', agents: 3, authentication: 3, provisioning: 0 }],
+    wau: {
+      scope: 'detected-cohort-nonbatch-success', countMethod: 'approximate-hll2', agents: 2,
+      daily: Array.from({ length: 8 }, (_, index) => ({
+        day: new Date(Date.UTC(2026, 9, 29 + index)).toISOString().slice(0, 10), agents: index < 3 ? 1 : 2,
+      })),
+    },
+  } }));
+  await page.goto('/');
+  await expect(page.locator('#wau-value')).toHaveText('≈2');
+  await expect(page.locator('.wau-chart')).toHaveAccessibleName('Observed WAU: approximately 2 Agent-user identities');
+  await expect(page.locator('#wau')).toContainText('Same-week detected cohort only');
+  await expect(page.locator('#wau')).toContainText('not a complete active-Agent inventory');
+  await expect(page.locator('#detections .kpi-value').first()).toHaveText('3');
+  await page.getByText('Show observed WAU data', { exact: true }).click();
+  await expect(page.locator('#wau tbody tr')).toHaveCount(8);
+  await expect(page.locator('#wau tbody tr').last().locator('td')).toHaveText('2');
+  await page.getByLabel('Trend date range').selectOption('7');
+  await expect(page.locator('#wau-value')).toHaveText('≈2');
+  await expect(page.locator('.trend-chart')).toHaveCount(4);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator('.wau-chart')).toBeVisible();
+  await expect(page.locator('.wau-chart')).toHaveAttribute('viewBox', '0 0 450 222');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test('missing successful-call data is unavailable, not zero and not inferred from detections', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.locator('#wau')).toContainText('Unavailable: no verified successful-call snapshot loaded');
+  await expect(page.locator('#wau-value')).toHaveCount(0);
+  await expect(page.locator('.wau-chart')).toHaveCount(0);
+});

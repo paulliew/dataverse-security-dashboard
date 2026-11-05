@@ -1,0 +1,45 @@
+// SANITIZED TEMPLATE: fictitious normalized views, not production table names.
+// Run privately with the SAME StartTime/EndTime as the detection snapshot.
+// Add the returned Wau object as the snapshot's optional "wau" property.
+set best_effort=false;
+let EndTime=now();
+let StartTime=EndTime-7d;
+let KnownPairs=materialize(DetectedAgentUsers
+    | where Timestamp >= StartTime and Timestamp < EndTime
+    | project OrganizationId=tolower(OrganizationId), AgentId=tolower(AgentId)
+    | where isnotempty(OrganizationId) and isnotempty(AgentId)
+    | distinct OrganizationId,AgentId);
+let KnownIds=toscalar(KnownPairs | summarize Ids=make_set(AgentId,1048576) | project Ids);
+let SuccessfulCallDays=materialize(DataverseRequestCompletions
+    | where Timestamp >= StartTime and Timestamp < EndTime
+    // At the prefilter limit, skip the optimization; the full join stays authoritative.
+    | where array_length(KnownIds) == 1048576 or CallerObjectId in~ (KnownIds)
+    | extend HttpCode=toint(extract(@"^(\d{3})(?:\s|$)",1,HttpStatus))
+    | where HttpCode >= 200 and HttpCode < 300 and HttpCode != 202 and ErrorCode == 0
+    | where RequestPath contains "/api/data/" or RequestPath contains "Organization.svc"
+    | where BatchSize == 0 and RequestPath !contains "$batch"
+    | where OperationName !in~ ("ExecuteMultiple","ExecuteTransaction")
+    | project OrganizationId=tolower(OrganizationId), AgentId=tolower(CallerObjectId), Day=startofday(Timestamp)
+    | where isnotempty(OrganizationId) and isnotempty(AgentId)
+    | join kind=inner KnownPairs on OrganizationId,AgentId
+    | distinct OrganizationId,AgentId,Day);
+let Wau=toscalar(SuccessfulCallDays
+    | summarize Sketch=hll(AgentId,2) | project dcount_hll(Sketch));
+let LastDate=startofday(iff(EndTime==startofday(EndTime),EndTime-1s,EndTime));
+let Days=range Day from startofday(StartTime) to LastDate step 1d;
+let EmptySketch=toscalar(datatable(AgentId:string)[]
+    | summarize Sketch=hll(AgentId,2) | project Sketch);
+let DailySketches=union
+    (SuccessfulCallDays | summarize Sketch=hll(AgentId,2) by Day),
+    (Days | project Day,Sketch=EmptySketch);
+let Daily=toscalar(Days
+    | extend Key=1
+    | join kind=inner (DailySketches | project ActivityDay=Day,Sketch | extend Key=1) on Key
+    | where ActivityDay <= Day
+    | summarize Sketch=hll_merge(Sketch) by Day
+    | project day=format_datetime(Day,"yyyy-MM-dd"),agents=dcount_hll(Sketch)
+    | order by day asc
+    | summarize Rows=make_list(bag_pack("day",day,"agents",agents))
+    | project Rows);
+print Wau=tostring(bag_pack("scope","detected-cohort-nonbatch-success",
+    "countMethod","approximate-hll2","agents",Wau,"daily",Daily))

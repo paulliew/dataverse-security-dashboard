@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseProductionSnapshot } from '../src/snapshot.ts';
 import { snapshotMiddleware } from '../vite.config.ts';
+import { daysBefore } from '../src/analytics.ts';
 
 const fixture = () => ({
   version: 1, dataMode: 'production', countMethod: 'approximate-hll2',
@@ -23,6 +24,45 @@ test('production snapshot preserves globally merged estimates instead of summing
   assert.equal(parsed.totals.agents, 2);
   assert.equal(parsed.rows.reduce((sum, row) => sum + row.agents, 0), 3);
   assert.equal(parsed.countMethod, 'approximate-hll2');
+});
+
+const wauFixture = () => ({
+  ...fixture(),
+  wau: {
+    scope: 'detected-cohort-nonbatch-success', countMethod: 'approximate-hll2', agents: 2,
+    daily: Array.from({ length: 8 }, (_, index) => ({ day: daysBefore('2026-10-29', -index), agents: index < 3 ? 1 : 2 })),
+  },
+});
+
+test('observed WAU is optional, uses all intersecting UTC dates and ends at the weekly distinct estimate', () => {
+  assert.equal(parseProductionSnapshot(fixture()).wau, undefined);
+  const parsed = parseProductionSnapshot(wauFixture());
+  assert.equal(parsed.wau!.daily.length, 8);
+  assert.equal(parsed.wau!.agents, 2);
+  assert.equal(parsed.wau!.daily.reduce((sum, day) => sum + day.agents, 0), 13);
+  const serializedDates = wauFixture();
+  serializedDates.wau.daily.forEach(day => { day.day += 'T00:00:00.0000000Z'; });
+  assert.equal(parseProductionSnapshot(serializedDates).wau!.daily[0].day, '2026-10-29');
+  const zero = wauFixture();
+  zero.wau.agents = 0;
+  zero.wau.daily.forEach(day => { day.agents = 0; });
+  assert.equal(parseProductionSnapshot(zero).wau!.agents, 0);
+  const midnight = wauFixture();
+  midnight.startTime = '2026-10-29T00:00:00Z';
+  midnight.endTime = '2026-11-05T00:00:00Z';
+  midnight.wau.daily.pop();
+  assert.equal(parseProductionSnapshot(midnight).wau!.daily.length, 7);
+});
+
+test('observed WAU rejects incomplete coverage, misaligned dates, unsupported scope and inconsistent totals', () => {
+  const missing = wauFixture();
+  missing.wau.daily.pop();
+  assert.throws(() => parseProductionSnapshot(missing), /coverage/);
+  const wrongDay = wauFixture();
+  wrongDay.wau.daily[0].day = '2026-10-28';
+  assert.throws(() => parseProductionSnapshot(wrongDay), /align/);
+  assert.throws(() => parseProductionSnapshot({ ...wauFixture(), wau: { ...wauFixture().wau, scope: 'all-agents' } }), /scope/);
+  assert.throws(() => parseProductionSnapshot({ ...wauFixture(), wau: { ...wauFixture().wau, agents: 3 } }), /final/);
 });
 
 test('production snapshot rejects missing/truncated rows, invalid counts, duplicate IDs and invalid windows', () => {
