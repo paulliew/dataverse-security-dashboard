@@ -9,6 +9,15 @@ export interface ObservedWau {
   daily: { day: string; agents: number }[];
 }
 
+export interface ObservedCallVolume {
+  scope: 'detected-cohort-nonbatch-success';
+  countMethod: 'distinct-request-ids';
+  calls: number;
+  missingRequestIds: 0;
+  conflictingRequestIds: 0;
+  daily: { day: string; calls: number }[];
+}
+
 export interface ProductionSnapshot extends DetectionCounts {
   version: 1;
   dataMode: 'production';
@@ -16,6 +25,7 @@ export interface ProductionSnapshot extends DetectionCounts {
   coverage: 'configured-source-groups';
   rowCount: number;
   wau?: ObservedWau;
+  callVolume?: ObservedCallVolume;
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -37,27 +47,57 @@ function timestamp(value: unknown): string {
   return value;
 }
 
+function windowDays(startTime: string, endTime: string): string[] {
+  const endDay = endTime.slice(0, 10);
+  const lastDay = /T00:00:00(?:\.0{1,7})?Z$/.test(endTime) ? daysBefore(endDay, 1) : endDay;
+  const days: string[] = [];
+  for (let day = startTime.slice(0, 10); day <= lastDay; day = daysBefore(day, -1)) days.push(day);
+  return days;
+}
+
+function alignedDay(value: unknown, expected: string): string {
+  const day = typeof value === 'string' ? value.replace(/T00:00:00(?:\.0{1,7})?Z$/, '') : undefined;
+  if (day !== expected) throw new Error('Snapshot dates must align with the report window.');
+  return expected;
+}
+
 function parseObservedWau(value: unknown, startTime: string, endTime: string): ObservedWau {
   const input = object(value);
   if (input.scope !== 'detected-cohort-nonbatch-success' || input.countMethod !== 'approximate-hll2') {
     throw new Error('Unsupported observed WAU scope.');
   }
-  const endDay = endTime.slice(0, 10);
-  const lastDay = /T00:00:00(?:\.0{1,7})?Z$/.test(endTime) ? daysBefore(endDay, 1) : endDay;
-  const days: string[] = [];
-  for (let day = startTime.slice(0, 10); day <= lastDay; day = daysBefore(day, -1)) days.push(day);
+  const days = windowDays(startTime, endTime);
   if (!Array.isArray(input.daily) || input.daily.length !== days.length) {
     throw new Error('Observed WAU daily coverage is incomplete.');
   }
   const daily = input.daily.map((value, index) => {
     const row = object(value);
-    const day = typeof row.day === 'string' ? row.day.replace(/T00:00:00(?:\.0{1,7})?Z$/, '') : undefined;
-    if (day !== days[index]) throw new Error('Observed WAU dates must align with the snapshot window.');
-    return { day: days[index], agents: count(row.agents) };
+    return { day: alignedDay(row.day, days[index]), agents: count(row.agents) };
   });
   const agents = count(input.agents);
   if (daily.at(-1)!.agents !== agents) throw new Error('Observed WAU total must equal the final within-week cumulative estimate.');
   return { scope: 'detected-cohort-nonbatch-success', countMethod: 'approximate-hll2', agents, daily };
+}
+
+function parseCallVolume(value: unknown, startTime: string, endTime: string): ObservedCallVolume {
+  const input = object(value);
+  if (input.scope !== 'detected-cohort-nonbatch-success' || input.countMethod !== 'distinct-request-ids') {
+    throw new Error('Unsupported call volume scope.');
+  }
+  if (input.missingRequestIds !== 0 || input.conflictingRequestIds !== 0) {
+    throw new Error('Call volume requires complete, unambiguous request IDs.');
+  }
+  const days = windowDays(startTime, endTime);
+  if (!Array.isArray(input.daily) || input.daily.length !== days.length) throw new Error('Call volume daily coverage is incomplete.');
+  const daily = input.daily.map((value, index) => {
+    const row = object(value);
+    return { day: alignedDay(row.day, days[index]), calls: count(row.calls) };
+  });
+  const calls = count(input.calls);
+  const sum = daily.reduce((total, row) => total + row.calls, 0);
+  if (!Number.isSafeInteger(sum) || sum !== calls) throw new Error('Weekly call volume must equal the sum of daily calls.');
+  return { scope: 'detected-cohort-nonbatch-success', countMethod: 'distinct-request-ids', calls,
+    missingRequestIds: 0, conflictingRequestIds: 0, daily };
 }
 
 export function parseProductionSnapshot(value: unknown): ProductionSnapshot {
@@ -82,6 +122,15 @@ export function parseProductionSnapshot(value: unknown): ProductionSnapshot {
     return { organizationId, agents: count(row.agents), authentication: count(row.authentication), provisioning: count(row.provisioning) };
   }).sort((a, b) => b.agents - a.agents || a.organizationId.localeCompare(b.organizationId));
   const totals = object(input.totals);
+  const wau = input.wau === undefined ? undefined : parseObservedWau(input.wau, startTime, endTime);
+  const callVolume = input.callVolume === undefined ? undefined : parseCallVolume(input.callVolume, startTime, endTime);
+  if (wau && callVolume && Boolean(wau.agents) !== Boolean(callVolume.calls)) {
+    throw new Error('WAU and call volume must agree on whether successful activity was observed.');
+  }
+  if (wau && callVolume && callVolume.daily.some((row, index) =>
+    row.calls === 0 && wau.daily[index].agents !== (index ? wau.daily[index - 1].agents : 0))) {
+    throw new Error('Observed WAU cannot change on a day without successful calls.');
+  }
   return {
     version: 1, dataMode: 'production', countMethod: 'approximate-hll2', coverage: 'configured-source-groups',
     startTime, endTime, rowCount: rows.length, rows,
@@ -89,6 +138,7 @@ export function parseProductionSnapshot(value: unknown): ProductionSnapshot {
       agents: count(totals.agents), organizations: count(totals.organizations),
       authenticationPairs: count(totals.authenticationPairs), provisioningPairs: count(totals.provisioningPairs),
     },
-    ...(input.wau === undefined ? {} : { wau: parseObservedWau(input.wau, startTime, endTime) }),
+    ...(wau ? { wau } : {}),
+    ...(callVolume ? { callVolume } : {}),
   };
 }

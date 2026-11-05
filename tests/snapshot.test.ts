@@ -75,6 +75,59 @@ test('production snapshot rejects missing/truncated rows, invalid counts, duplic
   assert.throws(() => parseProductionSnapshot({ ...fixture(), dataMode: 'synthetic' }), /contract/);
 });
 
+const callFixture = () => ({
+  ...wauFixture(),
+  wau: {
+    ...wauFixture().wau,
+    daily: wauFixture().wau.daily.map((row, index) => ({ ...row, agents: index === 7 ? 2 : 1 })),
+  },
+  callVolume: {
+    scope: 'detected-cohort-nonbatch-success', countMethod: 'distinct-request-ids',
+    calls: 16, missingRequestIds: 0, conflictingRequestIds: 0,
+    daily: Array.from({ length: 8 }, (_, index) => ({ day: daysBefore('2026-10-29', -index), calls: index === 0 ? 10 : index === 7 ? 6 : 0 })),
+  },
+});
+
+test('weekly call volume counts individual requests, aligns dates and sums daily volumes without replacing WAU', () => {
+  assert.equal(parseProductionSnapshot(fixture()).callVolume, undefined);
+  const parsed = parseProductionSnapshot(callFixture());
+  assert.equal(parsed.wau!.agents, 2);
+  assert.equal(parsed.callVolume!.calls, 16);
+  assert.equal(parsed.callVolume!.daily.reduce((sum, row) => sum + row.calls, 0), 16);
+  const serialized = callFixture();
+  serialized.callVolume.daily.forEach(row => { row.day += 'T00:00:00.0000000Z'; });
+  assert.equal(parseProductionSnapshot(serialized).callVolume!.daily[0].day, '2026-10-29');
+  const zero = callFixture();
+  zero.callVolume.calls = 0;
+  zero.callVolume.daily.forEach(row => { row.calls = 0; });
+  zero.wau.agents = 0;
+  zero.wau.daily.forEach(row => { row.agents = 0; });
+  assert.equal(parseProductionSnapshot(zero).callVolume!.calls, 0);
+  const midnight = callFixture();
+  midnight.startTime = '2026-10-29T00:00:00Z';
+  midnight.endTime = '2026-11-05T00:00:00Z';
+  midnight.callVolume.daily.pop();
+  midnight.callVolume.calls = 10;
+  midnight.wau.daily.pop();
+  midnight.wau.agents = 1;
+  assert.equal(parseProductionSnapshot(midnight).callVolume!.daily.length, 7);
+});
+
+test('call volume rejects partial request identities, unsupported scope, incomplete days and inconsistent totals', () => {
+  for (const change of [
+    { missingRequestIds: 1 }, { conflictingRequestIds: 1 }, { missingRequestIds: undefined },
+    { countMethod: 'telemetry-rows' }, { scope: 'all-users' }, { calls: 17 }, { calls: -1 },
+    { calls: 0, daily: callFixture().callVolume.daily.map(row => ({ ...row, calls: 0 })) },
+    { daily: callFixture().callVolume.daily.map((row, index) => ({ ...row, calls: index === 7 ? 16 : 0 })) },
+    { daily: callFixture().callVolume.daily.slice(1) },
+    { daily: callFixture().callVolume.daily.map((row, index) => index ? row : { ...row, day: '2026-10-28' }) },
+    { daily: callFixture().callVolume.daily.map((row, index) => index ? row : { ...row, calls: .5 }) },
+    { daily: callFixture().callVolume.daily.map((row, index) => index ? row : { ...row, day: row.day + 'T01:00:00Z' }) },
+  ]) {
+    assert.throws(() => parseProductionSnapshot({ ...callFixture(), callVolume: { ...callFixture().callVolume, ...change } }));
+  }
+});
+
 test('private snapshot endpoint is read-only, uncached and blocks cross-origin and invalid Host access', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'dashboard-snapshot-test-'));
   const path = join(directory, 'fixture.json');

@@ -4,7 +4,7 @@ A responsive, sample-data-first dashboard for **Dataverse Agent user creation tr
 
 The separate **Agents per organization** view shows illustrative Agent-user detections over the **past week (rolling 7 days / 168 hours) for WRR**, deduplicated across the whole week and both authentication and provisioning sources. It is not creation-based and does not change the existing creation trends.
 
-**By default, all counts shown are synthetic and WAU is unavailable.** An optional private production snapshot can replace **Agents per organization** and provide **observed weekly active Agent users (WAU)**; creation charts, cumulative counts, creation daily tables, tenant mappings and CSV remain synthetic. Mixed mode is explicitly labeled. The application executes no Dataverse, Microsoft Graph or production analytics queries and stores no production credentials. Future security features are labeled Planned, not implemented.
+**By default, all counts shown are synthetic and WAU/call volume are unavailable.** An optional private production snapshot can replace **Agents per organization** and provide **observed weekly active Agent users (WAU)** and **weekly successful Agent call volume**; creation charts, cumulative counts, creation daily tables, tenant mappings and CSV remain synthetic. Mixed mode is explicitly labeled. The application executes no Dataverse, Microsoft Graph or production analytics queries and stores no production credentials. Future security features are labeled Planned, not implemented.
 
 ## Run locally
 
@@ -98,6 +98,14 @@ Snapshot contract (illustrative structure; all counts below are placeholders):
     agents: number; // distinct successful callers over the full report week
     daily: { day: string; agents: number }[]; // within-week cumulative estimates
   };
+  callVolume?: {
+    scope: 'detected-cohort-nonbatch-success';
+    countMethod: 'distinct-request-ids';
+    calls: number; // individual successful requests over the full report week
+    missingRequestIds: 0; // nonzero or absent diagnostics reject the snapshot
+    conflictingRequestIds: 0;
+    daily: { day: string; calls: number }[]; // daily counts, not cumulative
+  };
 }
 ```
 
@@ -109,13 +117,23 @@ Coverage means the **configured source groups**, not independently verified worl
 
 The separate WAU chart requires **positive evidence of at least one successful, non-batch Dataverse API call** during the report week. It does not derive activity from detection counts. The user-approved initial scope is the **same-week detected cohort**: join request callers to qualifying detected identities on **both organization ID and Entra user object ID**, then deduplicate user IDs globally across organizations, requests and dates. Human/application users and successful callers without a matching Agent-user detection are not classified as Agent activity. This is an observed subset, not a complete inventory-based WAU.
 
-[`queries/observed-wau.kql`](queries/observed-wau.kql) is a sanitized template for fictitious `DetectedAgentUsers` and `DataverseRequestCompletions` views. The latter exposes `Timestamp`, `OrganizationId`, `CallerObjectId`, `HttpStatus`, `ErrorCode`, `RequestPath`, `BatchSize` and `OperationName`, normalized from verified request-completion telemetry by a private adapter. Success requires HTTP status 200–299 **except 202**, error code 0, and a qualifying Dataverse Web API or organization-service route. Only non-batch requests (`BatchSize == 0`, no `$batch` path) qualify. `ExecuteMultiple` and `ExecuteTransaction` are excluded until child-result semantics are verified. HTTP failures, missing/unparseable status, unknown error codes, asynchronous acceptance, unrelated routes, unmatched identities and unsupported batch calls do not contribute. A successful response is not proof of completed business tasks.
+[`queries/observed-wau.kql`](queries/observed-wau.kql) is a sanitized template for fictitious `DetectedAgentUsers` and `DataverseRequestCompletions` views. The latter exposes `Timestamp`, `OrganizationId`, `CallerObjectId`, `RequestId`, `HttpStatus`, `ErrorCode`, `RequestPath`, `BatchSize` and `OperationName`, normalized from verified request-completion telemetry by a private adapter. Success requires HTTP status 200–299 **except 202**, error code 0, and a qualifying Dataverse Web API or organization-service route. Only non-batch requests (`BatchSize == 0`, no `$batch` path) qualify. `ExecuteMultiple` and `ExecuteTransaction` are excluded until child-result semantics are verified. HTTP failures, missing/unparseable status, unknown error codes, asynchronous acceptance, unrelated routes, unmatched identities and unsupported batch calls do not contribute. A successful response is not proof of completed business tasks.
 
 Execute detection and successful-call queries with **the same exact start/end timestamps and detected cohort**, using strict configured-source coverage. Extend the private snapshot with the returned `wau` object; do not merge different report weeks or infer WAU from a global HTTP success count. Requerying detection sources recomputes the cohort and can change an earlier snapshot's counts if underlying telemetry changes; preserve both metrics together from one run. Sketches use accuracy 2 and are merged before estimating distinct users. Never sum daily, per-source or per-organization distinct estimates.
 
 The curve shows **distinct successful callers accumulated inside this one report week**, through each intersecting UTC date. Its last point equals the week's observed WAU. It is not a historical series of independent rolling seven-day WAU values. Because the window is exactly 168 hours rather than UTC-calendar-aligned, it usually intersects eight dates, with partial first/last dates; a midnight-aligned window intersects seven. Snapshot day values accept UTC `YYYY-MM-DD` dates or equivalent UTC-midnight ISO timestamps from analytics JSON serialization, normalized to date-only labels. The chart includes an accessible data table and is independent of the creation date-range controls.
 
 If `wau` is missing, the chart is explicitly **unavailable**, not zero, synthetic, or replaced by the detection count. A valid zero-valued successful-call result is distinct from unavailable data. Invalid/misaligned dates or a final estimate inconsistent with the weekly total reject the snapshot. Query timeouts, missing sources and partial/truncated results must not overwrite the last valid private snapshot or be presented as observed zeros. Telemetry gaps, missing request caller IDs, identities not detected that week and batch/async exclusions may undercount WAU.
+
+## Weekly successful Agent call volume
+
+The companion **Weekly Agent call volume** chart counts individual successful, non-batch Dataverse requests using **the same detected cohort, eligibility and exact report window as WAU**. An Agent user making ten distinct successful requests contributes ten calls but only one weekly active identity. Failures, HTTP 202, unsupported batches, unrelated routes and callers outside the detected cohort remain excluded.
+
+The extended [`queries/observed-wau.kql`](queries/observed-wau.kql) returns both `Wau` and `CallVolume` objects. Its normalized `RequestId` must be a verified server-generated identifier for an individual request, not a reusable activity, client-session or correlation ID. Deduplicate by organization/request ID across telemetry copies before daily aggregation, using the earliest completion timestamp. The cohort join must not multiply requests. Distinct requests from the same caller count separately, including requests at the same timestamp. Missing request IDs and request IDs associated with conflicting caller identities produce diagnostics; both must be zero before saving the snapshot. Do not silently count missing IDs as one request, use raw telemetry rows, or accept partial volume.
+
+Set `callVolume` to the returned object alongside `wau` and detection results from that same run. Counts use exact request-ID grouping, not HLL identity estimates. Daily bars **sum to the weekly total** and include empty days; first and last UTC dates can be partial. This chart displays one rolling 168-hour report window and its daily breakdown, **not a historical series of independent weekly totals**. It is independent of creation date controls and has an accessible daily data table. Open `http://127.0.0.1:5173/#call-volume` locally.
+
+Missing call-volume data is unavailable, not zero or inferred from WAU. A verified zero volume is shown as zero. Noninteger counts, invalid dates, incomplete buckets, unknown request-ID diagnostics or a weekly total inconsistent with the daily sum reject the snapshot. When both metrics are present, they must agree on whether successful activity occurred; WAU cannot change on a zero-call day. Preserve the last valid private snapshot after query failures or validation errors. “Exact” refers only to the observed request-ID count; telemetry gaps and the detected-cohort/batch exclusions may undercount total Agent traffic. No continuous refresh or historical weekly storage is implemented.
 
 ## Architecture & later live integration
 
@@ -124,10 +142,10 @@ If `wau` is missing, the chart is explicitly **unavailable**, not zero, syntheti
 | `src/sampleData.ts` | Synthetic provider and organization-details fixtures |
 | `src/analytics.ts` | Typed event/mapping contracts, correlation, exact distinct UTC aggregations |
 | `src/detections.ts` | Independent detection-window aggregation and exact per-organization/source deduplication |
-| `src/snapshot.ts` | Validates private production detection snapshots and preserves independently merged totals |
+| `src/snapshot.ts` | Validates private detection/activity snapshots, aligned buckets, request-ID diagnostics and merged totals |
 | `vite.config.ts` | Read-only localhost snapshot endpoint; private path loaded only on the server |
 | `queries/agents-per-organization.kql` | Sanitized, approximate HLL per-organization query template |
-| `queries/observed-wau.kql` | Sanitized successful-call eligibility, cohort join and within-week WAU accumulation |
+| `queries/observed-wau.kql` | Sanitized shared request eligibility, cohort join, within-week WAU and individual call volume |
 | `src/main.ts` | Dashboard rendering, date inspection, methodology and CSV |
 | `src/style.css` | Responsive styling, keyboard focus and reduced-motion support |
 | `tests/analytics.test.ts` | Correlation, deduplication, mapping and date-boundary coverage |

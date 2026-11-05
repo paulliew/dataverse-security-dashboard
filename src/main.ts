@@ -4,7 +4,7 @@ import type { DailyMetric } from './analytics.ts';
 import { loadSampleData } from './sampleData.ts';
 import { aggregateDetections } from './detections.ts';
 import { parseProductionSnapshot } from './snapshot.ts';
-import type { ObservedWau } from './snapshot.ts';
+import type { ObservedCallVolume, ObservedWau } from './snapshot.ts';
 
 const icons: Record<string, string> = {
   shield: '<path d="M12 3 4 6v6c0 5 8 9 8 9s8-4 8-9V6l-8-3Z"/><path d="m8 12 3 3 5-6"/>',
@@ -31,6 +31,7 @@ let detections = aggregateDetections(source.detections,
 let productionDetections = false;
 let detectionError = '';
 let observedWau: ObservedWau | undefined;
+let callVolume: ObservedCallVolume | undefined;
 let detectionPage = 0;
 const detectionPageSize = 100;
 const escapeHtml = (value: string) => value.replace(/[&<>"']/g, character => ({
@@ -118,10 +119,48 @@ function wauChart(): string {
   </section>`;
 }
 
+function callVolumeChart(): string {
+  const heading = '<div class="section-heading"><div><div class="eyebrow">WRR · SUCCESSFUL-CALL VOLUME</div><h2 id="call-volume-title">Weekly Agent call volume</h2><p>Successful non-batch Dataverse calls within the same-week detected cohort.</p></div></div>';
+  if (!callVolume) return `<section id="call-volume" aria-labelledby="call-volume-title">${heading}<p class="trend-note">Unavailable: no verified call-volume snapshot loaded. WAU and detection counts do not measure call volume.</p></section>`;
+  const { daily, calls } = callVolume;
+  const width = window.matchMedia('(min-width: 851px)').matches ? 900 : 450;
+  const height = 222, left = 76, right = 20, top = 14, bottom = 32;
+  const max = Math.max(4, Math.ceil(Math.max(...daily.map(row => row.calls)) / 4) * 4);
+  const step = (width - left - right) / daily.length;
+  const x = (index: number) => left + (index + .5) * step;
+  const y = (value: number) => height - bottom - value / max * (height - top - bottom);
+  const ticks = Array.from({ length: 5 }, (_, index) => {
+    const value = max / 4 * index;
+    return `<line x1="${left}" y1="${y(value)}" x2="${width - right}" y2="${y(value)}" class="grid-line"/><text x="${left - 12}" y="${y(value) + 4}" text-anchor="end">${format.format(value)}</text>`;
+  }).join('');
+  const labels = [0, Math.floor(daily.length / 2), daily.length - 1].map((index, label) =>
+    `<text x="${x(index)}" y="${height - 7}" text-anchor="${label === 0 ? 'start' : label === 2 ? 'end' : 'middle'}">${dateLabel(daily[index].day)}</text>`).join('');
+  return `<section id="call-volume" aria-labelledby="call-volume-title">${heading}
+    <article class="chart-card" style="--series:#008778">
+      <div class="chart-heading"><div><div class="eyebrow">PRODUCTION SNAPSHOT · DISTINCT REQUEST IDS</div><h2>Total successful Agent calls for the report week</h2><p>Repeated calls by the same identity count individually</p></div><span class="chart-symbol">${icon('agent')}</span></div>
+      <div class="chart-readout"><strong id="call-volume-value">${format.format(calls)}</strong><span>observed successful calls this report week</span></div>
+      <p class="range-caption">${detections.startTime} inclusive – ${detections.endTime} exclusive (UTC)</p>
+      <svg class="volume-chart" viewBox="0 0 ${width} ${height}" role="img" aria-labelledby="volume-svg-title" aria-describedby="volume-svg-description">
+        <title id="volume-svg-title">Weekly Agent call volume: ${format.format(calls)} successful calls</title>
+        <desc id="volume-svg-description">Daily successful non-batch calls within one rolling seven-day report window. Daily bars sum to the weekly total. First and last dates may be partial; this is not a historical series of weekly totals.</desc>
+        ${ticks}${labels}${daily.map((row, index) => {
+          const barWidth = step * .6;
+          return `<rect x="${x(index) - barWidth / 2}" y="${y(row.calls)}" width="${barWidth}" height="${height - bottom - y(row.calls)}" rx="2" fill="#008778"><title>${row.day}: ${format.format(row.calls)} successful calls</title></rect>`;
+        }).join('')}
+      </svg>
+      <div class="chart-footer"><span><i class="legend-dot"></i>Daily successful calls · summed for report week</span><span>UTC · production</span></div>
+    </article>
+    <p class="trend-note">Same eligibility and report window as observed WAU: HTTP 2xx except 202, error code 0, qualifying API/SDK routes, and no batch, ExecuteMultiple or ExecuteTransaction calls. Each organization/request ID counts once across duplicate telemetry; separate requests by the same Agent user count separately. One identity making ten calls adds ten calls but only one to WAU. Missing or conflicting request IDs reject the snapshot.</p>
+    <p class="trend-note">Observed telemetry only, not all Agent traffic or completed business tasks. Bars show daily counts, not cumulative counts. First and last UTC dates may be partial. The report week does not change with the creation trend range.</p>
+    <details class="daily-section"><summary>Show weekly call volume data</summary><div class="table-scroll"><table><caption>Production successful non-batch Agent calls — daily volumes sum to the report-week total</caption><thead><tr><th scope="col">Date (UTC)</th><th scope="col">Successful calls</th></tr></thead><tbody>${daily.map(row => `<tr><th scope="row">${row.day}</th><td>${format.format(row.calls)}</td></tr>`).join('')}</tbody></table></div></details>
+  </section>`;
+}
+
 function render(): void {
   const root = document.querySelector<HTMLDivElement>('#app')!;
   const totals = data.totals;
   const coverage = totals.organizations ? Math.round((totals.organizations - totals.unmappedOrganizations) / totals.organizations * 100) : 0;
+  const productionViews = ['Agents per organization', ...(observedWau ? ['observed WAU'] : []), ...(callVolume ? ['weekly call volume'] : [])];
   root.innerHTML = `
     <aside class="sidebar">
       <a class="brand" href="#main" aria-label="Dataverse security home"><span class="brand-mark">${icon('shield')}</span><span>dataverse<span class="brand-sub">SECURITY INTELLIGENCE</span></span></a>
@@ -137,7 +176,7 @@ function render(): void {
       <header class="topbar"><div class="breadcrumb">Workspace ${icon('chevron')} <span>Agent users</span></div><div class="topbar-right"><span class="sample-badge"><i></i> ${productionDetections ? 'MIXED DATA SOURCES' : 'SAMPLE DATA'}</span><span class="utc-label">All times UTC</span></div></header>
       <main id="main">
         <div class="page-heading"><div><div class="eyebrow">IDENTITY & ACCESS / AGENT USERS</div><h1>Agent users<span class="title-dot">.</span></h1><p>Understand adoption. Follow creation trends. See the bigger picture.</p></div><button class="button export-button" id="export">${icon('download')} Export CSV</button></div>
-        <div class="sample-banner">${icon('info')}<p><strong>${productionDetections ? `Production detection${observedWau ? ' and WAU' : ''} snapshot; synthetic creation trends.` : "You're exploring synthetic sample data."}</strong> ${productionDetections ? `${observedWau ? 'Agents per organization and observed WAU use' : 'Only Agents per organization uses'} production results. No continuous refresh.` : 'Creation trends and a separate detection view; not live usage or security posture.'}</p><button data-methodology>How it works ${icon('arrow')}</button></div>
+        <div class="sample-banner">${icon('info')}<p><strong>${productionDetections ? `Production ${callVolume ? 'activity' : `detection${observedWau ? ' and WAU' : ''}`} snapshot; synthetic creation trends.` : "You're exploring synthetic sample data."}</strong> ${productionDetections ? `${productionViews.length === 1 ? 'Only Agents per organization uses' : productionViews.join(' and ') + ' use'} production results. No continuous refresh.` : 'Creation trends and a separate detection view; not live usage or security posture.'}</p><button data-methodology>How it works ${icon('arrow')}</button></div>
         <section class="range-toolbar" aria-label="Date range"><div><span class="section-kicker">CREATION OVERVIEW</span><span class="range-caption">${dateLabel(data.daily[0].day, true)} – ${dateLabel(source.asOf, true)}</span></div><label class="range-select">${icon('calendar')}<select id="range" aria-label="Trend date range"><option value="90" ${range === 90 ? 'selected' : ''}>90 days ago through today</option><option value="30" ${range === 30 ? 'selected' : ''}>30 days ago through today</option><option value="7" ${range === 7 ? 'selected' : ''}>7 days ago through today</option></select></label></section>
         <section class="kpi-grid" aria-label="Agent users in selected period; organizations and tenants accumulated through today">
           ${metrics.map(metric => `<article class="kpi"><div class="kpi-label">${metric.title}${icon(metric.icon)}</div><div class="kpi-value">${format.format(totals[metric.key])}</div><div class="kpi-note"><span class="mini-dot" style="background:${metric.color}"></span>${metric.key === 'users' ? 'Distinct across selected period' : 'Available-history distinct to date'}</div></article>`).join('')}
@@ -166,16 +205,18 @@ function render(): void {
           <p class="trend-note">An agent seen in both sources counts once within an organization. The same agent in two organizations counts once in each row, but once in the global identity total. Source columns overlap and must not be added. Detections do not establish creation, sign-ins, or current enabled inventory. ${productionDetections ? 'Global totals come from globally merged sketches, not sums of organization estimates.' : 'Exact synthetic counts are shown here; the supplied report approach uses approximate HLL counts.'}</p>`}
         </section>
         ${wauChart()}
+        ${callVolumeChart()}
         <footer class="page-footer"><span>${icon('shield')} Dataverse security intelligence</span><span>${productionDetections ? 'Production activity snapshot · creation trends synthetic · no continuous refresh' : `Synthetic dataset · generated for ${source.asOf} UTC · no live connection`}</span></footer>
         <p id="day-announcement" class="sr-only" aria-live="polite"></p>
       </main>
     </div>
     <dialog id="methodology" aria-labelledby="method-title"><div class="dialog-heading"><span class="eyebrow">DATA & DEFINITIONS</span><button id="close-dialog" class="close-button" aria-label="Close methodology">×</button></div><h2 id="method-title">What these numbers mean</h2>
-      <p>This dashboard has <strong>separate creation and detection views</strong>, not an inventory of enabled users, API activity, sign-ins, permissions, or risk. Creation trends always use synthetic data. Detection counts ${productionDetections ? 'use a locally loaded production snapshot and approximate HLL estimates' : 'are synthetic unless a valid private production snapshot is configured'}.</p>
+      <p>This dashboard has <strong>separate creation, detection and observed API activity views</strong>, not an inventory of enabled users, sign-ins, permissions, or risk. Creation trends always use synthetic data. Detection counts ${productionDetections ? 'use a locally loaded production snapshot and approximate HLL estimates' : 'are synthetic unless a valid private production snapshot is configured'}.</p>
       <h3>Agents per organization: past week for WRR</h3><p>This separate view uses qualifying authentication and provisioning detections, not creation correlations. Its rolling seven-day (168-hour) window ends ${productionDetections ? 'at the snapshot query timestamp' : 'at page-load time'}, includes the start timestamp and excludes the end timestamp. It is not the previous calendar week. IDs are normalized to lowercase and blank IDs excluded. Agents are deduplicated across the entire week and both sources within each organization, not summed from daily distincts. Source-specific counts overlap; organization rows cannot be summed to get globally distinct identities. This view does not change when the creation trend range changes. The sample uses exact sets; production snapshots merge accuracy-2 HLL sketches per organization across clusters and sources and yield approximate counts. Configured source groups are not a guarantee of complete telemetry or worldwide coverage. The exact table row count can differ from the approximate global organization estimate.</p>
       <h3>Agent users, specifically</h3><p>Dataverse Agent users are provisioned for AI agents with enterprise-managed Microsoft Entra agent identities. A human user, application user, parent agent identity, and agent's user account are distinct concepts. An Entra agent identity alone is not counted here.</p>
       <h3>From correlated events to daily and to-date counts</h3><p>A qualifying correlation needs an Agent user identification with a user and organization ID, a creation event, and an apply-user or force-sync operation. Correlations are resolved before date filtering and assigned to the earliest creation-event timestamp in UTC, including when detection happened on a different day.</p>
       <h3>Observed weekly active Agent users (WAU)</h3><p>WAU requires at least one successful non-batch request on qualifying Dataverse API/SDK routes during the same report window. HTTP 2xx except 202 and error code 0 are required. Batch requests, ExecuteMultiple and ExecuteTransaction are excluded until child-result semantics are verified. Callers are joined to the same-week detected Agent-user cohort by both organization and Entra user object ID, then counted distinctly across all organizations and days. Successful requests by callers outside that cohort are not classified as Agent activity. This is an observed subset, not a complete inventory-based WAU. The chart accumulates successful callers from the window start; the last point is that week's WAU, not a sum of daily distincts or a trend of independent rolling seven-day totals. No WAU snapshot means unavailable, never zero or a detection-based fallback.</p>
+      <h3>Weekly Agent call volume</h3><p>Call volume uses the same successful non-batch eligibility, detected cohort and report week as WAU, but counts individual requests. Duplicate telemetry for the same organization/request ID is counted once, at its earliest completion time. Distinct requests by one Agent user count separately. Daily counts sum to the weekly total; these are not cumulative bars or historical weekly totals. The private adapter must provide a verified server-generated request ID. Missing IDs or IDs associated with conflicting caller identities reject the snapshot, rather than producing a partial volume. Missing call-volume data is unavailable, not zero or inferred from WAU. Counts are exact for observed request IDs, not a claim of complete telemetry.</p>
       <p><strong>New Agent users:</strong> distinct created user object IDs within each UTC date, with a selected-period distinct card. <strong>Cumulative Agent users:</strong> distinct created user object IDs across all available history through each date, deduplicated across organizations, correlations and dates. This is not a running sum of daily user counts. <strong>Organizations:</strong> accumulated distinct organization IDs on qualifying creations through the end of each date. <strong>Tenants:</strong> accumulated distinct tenant IDs resolved from those organizations through each date. Organization and tenant cards show these counts through today; they do not reset when the visible range changes. Repeated identities are counted once, never summed from daily distincts. Duplicate mappings don't multiply counts; conflicting mappings cause an explicit error. Missing mappings don't reduce user or organization counts.</p>
       <h3>Range & sample limitations</h3><p>The default starts 90 UTC dates before today and includes today: 91 daily buckets. Cumulative user, organization and tenant counts include all available history before the selected range, starting ${dateLabel(source.historyStart, true)} in this synthetic dataset. This is available-history accumulation, not a verified lifetime inventory or currently enabled population. A date without creations has zero new users and carries forward accumulated counts. Today is an illustrative sample, not a complete observed day. In a future live adapter, unavailable telemetry must be marked unknown, not assumed zero, and historical coverage must be reported explicitly.</p>
       <p>The application executes no production query and holds no production credentials. Detection snapshots are loaded through a read-only localhost endpoint from a private file outside the repository. Creation-event and organization-to-tenant contracts remain illustrative, not a verified production schema. Correlation completeness, telemetry retention and mapping freshness remain future work.</p>
@@ -282,6 +323,7 @@ async function initialize(): Promise<void> {
       const snapshot = parseProductionSnapshot(await response.json());
       detections = snapshot;
       observedWau = snapshot.wau;
+      callVolume = snapshot.callVolume;
       productionDetections = true;
     }
   } catch (error) {
@@ -293,10 +335,12 @@ async function initialize(): Promise<void> {
     for (const [index, metric] of chartMetrics.entries()) {
       document.querySelector(`[data-metric="${metric.key}"]`)!.closest('.chart-card')!.outerHTML = chart(metric, index);
     }
-    const wauDataOpen = document.querySelector<HTMLDetailsElement>('#wau details')?.open;
-    document.querySelector('#wau')!.outerHTML = wauChart();
-    const wauDetails = document.querySelector<HTMLDetailsElement>('#wau details');
-    if (wauDetails) wauDetails.open = Boolean(wauDataOpen);
+    for (const [id, draw] of [['wau', wauChart], ['call-volume', callVolumeChart]] as const) {
+      const dataOpen = document.querySelector<HTMLDetailsElement>(`#${id} details`)?.open;
+      document.getElementById(id)!.outerHTML = draw();
+      const details = document.querySelector<HTMLDetailsElement>(`#${id} details`);
+      if (details) details.open = Boolean(dataOpen);
+    }
     bindChartEvents();
   });
 }

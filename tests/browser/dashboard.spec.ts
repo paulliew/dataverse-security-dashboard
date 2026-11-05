@@ -206,4 +206,49 @@ test('missing successful-call data is unavailable, not zero and not inferred fro
   await expect(page.locator('#wau')).toContainText('Unavailable: no verified successful-call snapshot loaded');
   await expect(page.locator('#wau-value')).toHaveCount(0);
   await expect(page.locator('.wau-chart')).toHaveCount(0);
+  await expect(page.locator('#call-volume')).toContainText('Unavailable: no verified call-volume snapshot loaded');
+  await expect(page.locator('#call-volume-value')).toHaveCount(0);
+});
+
+test('weekly call volume shows individual daily requests, a weekly total and accessible responsive data independently of WAU', async ({ page }) => {
+  await page.clock.setFixedTime(new Date('2026-11-05T19:00:00Z'));
+  const daily = Array.from({ length: 8 }, (_, index) => ({
+    day: new Date(Date.UTC(2026, 9, 29 + index)).toISOString().slice(0, 10), calls: index === 0 ? 10 : index === 7 ? 6 : 0,
+  }));
+  const snapshot = {
+    version: 1, dataMode: 'production', countMethod: 'approximate-hll2', coverage: 'configured-source-groups',
+    startTime: '2026-10-29T17:00:00Z', endTime: '2026-11-05T17:00:00Z', rowCount: 1,
+    totals: { agents: 3, organizations: 1, authenticationPairs: 3, provisioningPairs: 0 },
+    rows: [{ organizationId: 'fixture-a', agents: 3, authentication: 3, provisioning: 0 }],
+    wau: { scope: 'detected-cohort-nonbatch-success', countMethod: 'approximate-hll2', agents: 2,
+      daily: daily.map(row => ({ day: row.day, agents: row.calls === 6 ? 2 : 1 })) },
+    callVolume: { scope: 'detected-cohort-nonbatch-success', countMethod: 'distinct-request-ids',
+      calls: 16, missingRequestIds: 0, conflictingRequestIds: 0, daily },
+  };
+  await page.route('**/api/detection-snapshot', route => route.fulfill({ json: snapshot }));
+  await page.goto('/');
+  await expect(page.locator('#call-volume-value')).toHaveText('16');
+  await expect(page.locator('.volume-chart')).toHaveAccessibleName('Weekly Agent call volume: 16 successful calls');
+  await expect(page.locator('.volume-chart rect')).toHaveCount(8);
+  await expect(page.locator('#wau-value')).toHaveText('≈2');
+  await expect(page.locator('#call-volume')).toContainText('One identity making ten calls adds ten calls but only one to WAU');
+  await page.getByText('Show weekly call volume data', { exact: true }).click();
+  await expect(page.locator('#call-volume tbody tr')).toHaveCount(8);
+  await expect(page.locator('#call-volume tbody tr').first().locator('td')).toHaveText('10');
+  await expect(page.locator('#call-volume tbody tr').nth(1).locator('td')).toHaveText('0');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator('.volume-chart')).toHaveAttribute('viewBox', '0 0 450 222');
+  await expect(page.locator('#call-volume details')).toHaveAttribute('open', '');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.getByLabel('Trend date range').selectOption('7');
+  await expect(page.locator('#call-volume-value')).toHaveText('16');
+  await expect(page.locator('#wau-value')).toHaveText('≈2');
+  await expect(page.locator('.trend-chart')).toHaveCount(4);
+  snapshot.callVolume.calls = 0;
+  snapshot.callVolume.daily.forEach(row => { row.calls = 0; });
+  snapshot.wau.agents = 0;
+  snapshot.wau.daily.forEach(row => { row.agents = 0; });
+  await page.reload();
+  await expect(page.locator('#call-volume-value')).toHaveText('0');
+  await expect(page.locator('.volume-chart')).toBeVisible();
 });
