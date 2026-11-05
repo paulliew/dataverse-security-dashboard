@@ -1,5 +1,6 @@
 import { daysBefore, utcDay } from './analytics.ts';
 import type { OrganizationDetail, TraceEvent } from './analytics.ts';
+import type { AgentDetection } from './detections.ts';
 
 export interface SampleDataset {
   mode: 'synthetic';
@@ -7,6 +8,8 @@ export interface SampleDataset {
   historyStart: string;
   events: TraceEvent[];
   organizationDetails: OrganizationDetail[];
+  detections: AgentDetection[];
+  detectionEndTime: string;
 }
 
 // Replace this provider, not the presentation layer, when a live adapter is approved.
@@ -42,5 +45,19 @@ export function loadSampleData(now = new Date()): SampleDataset {
     { correlationId: 'sample-midnight', timestamp: `${daysBefore(asOf, 1)}T23:59:30Z`, kind: 'applyUser' },
     { correlationId: 'sample-midnight', timestamp: `${asOf}T00:00:10Z`, kind: 'userCreated' },
   );
-  return { mode: 'synthetic', asOf, historyStart: daysBefore(asOf, 120), events, organizationDetails };
+  const detectionEndTime = now.toISOString();
+  const detections: AgentDetection[] = [];
+  for (let org = 1; org <= 12; org++) {
+    for (let agent = 0; agent < 2 + org % 5; agent++) {
+      const base = {
+        timestamp: new Date(now.getTime() - (1 + agent) * 3_600_000).toISOString(),
+        organizationId: `sample-org-${org}`,
+        agentId: `sample-detected-agent-${agent}`,
+      };
+      detections.push({ ...base, source: 'authentication' });
+      if (agent % 2 === 0) detections.push({ ...base, source: 'provisioning' });
+      detections.push({ ...base, source: 'authentication' });
+    }
+  }
+  return { mode: 'synthetic', asOf, historyStart: daysBefore(asOf, 120), events, organizationDetails, detections, detectionEndTime };
 }

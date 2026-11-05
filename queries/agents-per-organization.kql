@@ -1,0 +1,26 @@
+// SANITIZED TEMPLATE ONLY: these views are illustrative, not production tables.
+// Each private view must union all approved clusters for that source, apply
+// verified Agent-user detection filters, and expose Timestamp, OrganizationId,
+// AgentId. Do not filter for creation or require a creation correlation.
+let EndTime = now();
+let StartTime = EndTime - 24h;
+let SourceCounts =
+    union
+        (AuthenticationAgentSignals | extend Source = "authentication"),
+        (ProvisioningAgentSignals | extend Source = "provisioning")
+    | where Timestamp >= StartTime and Timestamp < EndTime
+    | project OrganizationId = tolower(OrganizationId),
+              AgentId = tolower(AgentId), Source
+    | where isnotempty(OrganizationId) and isnotempty(AgentId)
+    | summarize AgentSketch = hll(AgentId, 2) by OrganizationId, Source;
+SourceCounts
+| extend SourceAgents = dcount_hll(AgentSketch)
+| summarize AllAgentSketch = hll_merge(AgentSketch),
+            AuthenticationDetectedAgents = maxif(SourceAgents, Source == "authentication"),
+            ProvisioningDetectedAgents = maxif(SourceAgents, Source == "provisioning")
+    by OrganizationId
+| project StartTime, EndTime, OrganizationId,
+          DistinctAgents = dcount_hll(AllAgentSketch),
+          AuthenticationDetectedAgents = coalesce(AuthenticationDetectedAgents, tolong(0)),
+          ProvisioningDetectedAgents = coalesce(ProvisioningDetectedAgents, tolong(0))
+| order by DistinctAgents desc, OrganizationId asc

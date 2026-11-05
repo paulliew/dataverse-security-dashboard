@@ -2,6 +2,8 @@
 
 A responsive, sample-data-first dashboard for **Dataverse Agent user creation trends**. Explore daily new Agent users alongside a separate cumulative distinct Agent users chart and accumulated distinct organizations and mapped tenants to date. All cumulative counts include available history before the displayed range. This first feature measures creation/adoption, **not** runtime usage, security posture, enabled-user inventory, or sign-ins.
 
+The separate **Agents per organization** view shows illustrative Agent-user detections over the last 24 hours, deduplicated across authentication and provisioning sources. It is not creation-based and does not change the existing creation trends.
+
 **Everything shown is synthetic. No Dataverse, Microsoft Graph, or production analytics queries are executed.** No credentials or environment configuration are required. Future security features are labeled Planned, not implemented.
 
 ## Run locally
@@ -51,12 +53,26 @@ Tenant mapping coverage = organizations in all available qualifying history thro
 
 CSV columns are `date_utc`, `new_agent_users_daily`, `agent_users_distinct_to_date`, `organizations_distinct_to_date`, `mapped_tenants_distinct_to_date`, and `data_mode`. Table headers, chart readouts, and accessible announcements use the same daily-versus-accumulated definitions.
 
+## Agents per organization: detection query
+
+The supplied report query merges sketches globally and returns overall identities, organizations and source-specific organization/agent pairs. It does **not** return agents per organization because it discards organization IDs before the final aggregation.
+
+[`queries/agents-per-organization.kql`](queries/agents-per-organization.kql) is a **sanitized template**, not a runnable production query. Its fictitious normalized views expose `Timestamp`, `OrganizationId` and `AgentId` after verified source-specific Agent-user detection filters. A private adapter must implement the authentication source's detection/confirmation signals and the provisioning source's explicit Agent-user identification signals, including extraction and validation of the user ID. No creation event, operation or correlation is required for this view. The adapter must include all approved clusters for each source and report incomplete coverage rather than silently treating missing clusters as zero. Actual source names, filters and infrastructure configuration are deliberately not published here.
+
+The template keeps `OrganizationId` while computing accuracy-2 HLL sketches per organization and source, then merges sketches across sources for each organization. Merge sketches across clusters before estimating counts; do not sum per-cluster or per-source distinct counts. These KQL counts are approximate. The template has not been executed against production or validated against a confirmed schema.
+
+The sample uses `{ timestamp, organizationId, agentId, source: 'authentication' | 'provisioning' }` records and exact sets in `src/detections.ts`. Its separate window is `[page-load time minus 24 hours, page-load time)` in UTC. Lowercase IDs are deduplicated within each organization across both sources; blank IDs are excluded. Both timestamps are shown. Repeated detections are not operations or additional agents. One agent in multiple organizations contributes to each organization row but only once to the global identity total. Source columns overlap and cannot be added to get the union. Source pair cards count distinct organization/agent pairs, not globally distinct identities. Only organizations with qualifying detections are listed; an absent organization does not imply it has no Agent users.
+
+Fixtures include repeat detections, source overlap, shared identities across organizations and single-source identities. The detection view uses neither creation correlations nor tenant mappings and does not claim inventory completeness, sign-ins, or report reconciliation. The existing CSV export remains creation-trend-only; detection rows appear in their own accessible table.
+
 ## Architecture & later live integration
 
 | File | Responsibility |
 | --- | --- |
 | `src/sampleData.ts` | Synthetic provider and organization-details fixtures |
 | `src/analytics.ts` | Typed event/mapping contracts, correlation, exact distinct UTC aggregations |
+| `src/detections.ts` | Independent 24-hour detection window and exact per-organization/source deduplication |
+| `queries/agents-per-organization.kql` | Sanitized, approximate HLL per-organization query template |
 | `src/main.ts` | Dashboard rendering, date inspection, methodology and CSV |
 | `src/style.css` | Responsive styling, keyboard focus and reduced-motion support |
 | `tests/analytics.test.ts` | Correlation, deduplication, mapping and date-boundary coverage |

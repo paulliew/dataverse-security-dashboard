@@ -2,6 +2,7 @@ import './style.css';
 import { aggregateDaily, correlateCreations, daysBefore } from './analytics.ts';
 import type { DailyMetric } from './analytics.ts';
 import { loadSampleData } from './sampleData.ts';
+import { aggregateDetections } from './detections.ts';
 
 const icons: Record<string, string> = {
   shield: '<path d="M12 3 4 6v6c0 5 8 9 8 9s8-4 8-9V6l-8-3Z"/><path d="m8 12 3 3 5-6"/>',
@@ -23,6 +24,11 @@ const dateLabel = (day: string, long = false) => new Intl.DateTimeFormat('en-US'
 }).format(new Date(`${day}T00:00:00Z`));
 const source = loadSampleData();
 const creations = correlateCreations(source.events);
+const detections = aggregateDetections(source.detections,
+  new Date(Date.parse(source.detectionEndTime) - 86_400_000).toISOString(), source.detectionEndTime);
+const escapeHtml = (value: string) => value.replace(/[&<>"']/g, character => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+})[character]!);
 let range = 90;
 let data = aggregateDaily(creations, source.organizationDetails, daysBefore(source.asOf, range), source.asOf);
 let selectedIndex = data.daily.length - 1;
@@ -89,7 +95,7 @@ function render(): void {
       <header class="topbar"><div class="breadcrumb">Workspace ${icon('chevron')} <span>Agent users</span></div><div class="topbar-right"><span class="sample-badge"><i></i> SAMPLE DATA</span><span class="utc-label">All times UTC</span></div></header>
       <main id="main">
         <div class="page-heading"><div><div class="eyebrow">IDENTITY & ACCESS / AGENT USERS</div><h1>Agent users<span class="title-dot">.</span></h1><p>Understand adoption. Follow creation trends. See the bigger picture.</p></div><button class="button export-button" id="export">${icon('download')} Export CSV</button></div>
-        <div class="sample-banner">${icon('info')}<p><strong>You're exploring synthetic sample data.</strong> These trends illustrate Agent user creation, not live usage or security posture.</p><button data-methodology>How it works ${icon('arrow')}</button></div>
+        <div class="sample-banner">${icon('info')}<p><strong>You're exploring synthetic sample data.</strong> Creation trends and a separate detection view; not live usage or security posture.</p><button data-methodology>How it works ${icon('arrow')}</button></div>
         <section class="range-toolbar" aria-label="Date range"><div><span class="section-kicker">CREATION OVERVIEW</span><span class="range-caption">${dateLabel(data.daily[0].day, true)} – ${dateLabel(source.asOf, true)}</span></div><label class="range-select">${icon('calendar')}<select id="range" aria-label="Trend date range"><option value="90" ${range === 90 ? 'selected' : ''}>90 days ago through today</option><option value="30" ${range === 30 ? 'selected' : ''}>30 days ago through today</option><option value="7" ${range === 7 ? 'selected' : ''}>7 days ago through today</option></select></label></section>
         <section class="kpi-grid" aria-label="Agent users in selected period; organizations and tenants accumulated through today">
           ${metrics.map(metric => `<article class="kpi"><div class="kpi-label">${metric.title}${icon(metric.icon)}</div><div class="kpi-value">${format.format(totals[metric.key])}</div><div class="kpi-note"><span class="mini-dot" style="background:${metric.color}"></span>${metric.key === 'users' ? 'Distinct across selected period' : 'Available-history distinct to date'}</div></article>`).join('')}
@@ -101,12 +107,25 @@ function render(): void {
         </section>
         <section class="mapping-note"><span class="mapping-icon">${icon('layers')}</span><div><h3>Organizations aren't tenants.</h3><p>Multiple organizations can belong to one tenant. Tenant counts use organization-details mappings; ${totals.unmappedOrganizations} organization${totals.unmappedOrganizations === 1 ? '' : 's'} in the available history through today ${totals.unmappedOrganizations === 1 ? 'is' : 'are'} unmapped. These remain in accumulated organization counts and their in-range creations remain in user counts, but they add no tenant.</p></div><button class="text-button" data-methodology>View methodology ${icon('arrow')}</button></section>
         <section class="daily-section"><div class="daily-heading"><div><h2>Behind the trends</h2><p>Daily new users; accumulated distinct users, organizations and tenants.</p></div><button class="button" id="toggle-table" aria-expanded="${tableVisible}" aria-controls="daily-table">${tableVisible ? 'Hide' : 'Show'} daily data ${icon('grid')}</button></div><div id="daily-table" ${tableVisible ? '' : 'hidden'}><div class="table-scroll"><table><caption>Synthetic daily new users and accumulated distinct counts (UTC)</caption><thead><tr><th scope="col">Date (UTC)</th><th scope="col">New Agent users (daily)</th><th scope="col">Agent users to date</th><th scope="col">Organizations to date</th><th scope="col">Mapped tenants to date</th></tr></thead><tbody>${[...data.daily].reverse().map(day => `<tr><th scope="row">${day.day}</th><td>${day.users}</td><td>${day.cumulativeUsers}</td><td>${day.organizations}</td><td>${day.tenants}</td></tr>`).join('')}</tbody></table></div></div></section>
+        <section id="detections" aria-labelledby="detections-title">
+          <div class="section-heading"><div><div class="eyebrow">SEPARATE DETECTION VIEW · SYNTHETIC</div><h2 id="detections-title">Agents per organization</h2><p>Last 24 hours of Agent-user detections, independent of the creation trend range.</p></div></div>
+          <p class="range-caption">${detections.startTime} inclusive – ${detections.endTime} exclusive (UTC)</p>
+          <div class="kpi-grid">
+            <article class="kpi"><div class="kpi-label">Detected Agent identities</div><div class="kpi-value">${format.format(detections.totals.agents)}</div><div class="kpi-note">Distinct across organizations and sources</div></article>
+            <article class="kpi"><div class="kpi-label">Detected organizations</div><div class="kpi-value">${format.format(detections.totals.organizations)}</div><div class="kpi-note">With at least one qualifying detection</div></article>
+            <article class="kpi"><div class="kpi-label">Authentication pairs</div><div class="kpi-value">${format.format(detections.totals.authenticationPairs)}</div><div class="kpi-note">Distinct organization / agent pairs</div></article>
+            <article class="kpi"><div class="kpi-label">Provisioning pairs</div><div class="kpi-value">${format.format(detections.totals.provisioningPairs)}</div><div class="kpi-note">Distinct organization / agent pairs</div></article>
+          </div>
+          <div class="table-scroll"><table><caption>Synthetic Agent-user detections per organization — exact distinct counts</caption><thead><tr><th scope="col">Organization ID</th><th scope="col">Distinct detected agents</th><th scope="col">Authentication detected</th><th scope="col">Provisioning detected</th></tr></thead><tbody>${detections.rows.map(row => `<tr><th scope="row">${escapeHtml(row.organizationId)}</th><td>${row.agents}</td><td>${row.authentication}</td><td>${row.provisioning}</td></tr>`).join('')}</tbody></table></div>
+          <p class="trend-note">An agent seen in both sources counts once within an organization. The same agent in two organizations counts once in each row, but once in the global identity total. Source columns overlap and must not be added. Detections do not establish creation, sign-ins, or current enabled inventory. Exact synthetic counts are shown here; the supplied report approach uses approximate HLL counts.</p>
+        </section>
         <footer class="page-footer"><span>${icon('shield')} Dataverse security intelligence</span><span>Synthetic dataset · generated for ${source.asOf} UTC · no live connection</span></footer>
         <p id="day-announcement" class="sr-only" aria-live="polite"></p>
       </main>
     </div>
     <dialog id="methodology" aria-labelledby="method-title"><div class="dialog-heading"><span class="eyebrow">DATA & DEFINITIONS</span><button id="close-dialog" class="close-button" aria-label="Close methodology">×</button></div><h2 id="method-title">What these numbers mean</h2>
-      <p>This is a <strong>synthetic creation-trend dashboard</strong>, not an inventory of enabled users, API activity, sign-ins, permissions, or risk.</p>
+      <p>This is a <strong>synthetic dashboard with separate creation and detection views</strong>, not an inventory of enabled users, API activity, sign-ins, permissions, or risk.</p>
+      <h3>Agents per organization: last 24 hours</h3><p>This separate view uses qualifying authentication and provisioning detections, not creation correlations. Its fixed window ends at page-load time, includes the start timestamp and excludes the end timestamp. IDs are normalized to lowercase and blank IDs excluded. Agents are deduplicated across sources within each organization. Source-specific counts overlap; organization rows cannot be summed to get globally distinct identities. This view does not change when the creation trend range changes. The sample uses exact sets; the sanitized query template merges accuracy-2 HLL sketches per organization across clusters and sources and yields approximate counts. No production query or source coverage has been validated by this sample view.</p>
       <h3>Agent users, specifically</h3><p>Dataverse Agent users are provisioned for AI agents with enterprise-managed Microsoft Entra agent identities. A human user, application user, parent agent identity, and agent's user account are distinct concepts. An Entra agent identity alone is not counted here.</p>
       <h3>From correlated events to daily and to-date counts</h3><p>A qualifying correlation needs an Agent user identification with a user and organization ID, a creation event, and an apply-user or force-sync operation. Correlations are resolved before date filtering and assigned to the earliest creation-event timestamp in UTC, including when detection happened on a different day.</p>
       <p><strong>New Agent users:</strong> distinct created user object IDs within each UTC date, with a selected-period distinct card. <strong>Cumulative Agent users:</strong> distinct created user object IDs across all available history through each date, deduplicated across organizations, correlations and dates. This is not a running sum of daily user counts. <strong>Organizations:</strong> accumulated distinct organization IDs on qualifying creations through the end of each date. <strong>Tenants:</strong> accumulated distinct tenant IDs resolved from those organizations through each date. Organization and tenant cards show these counts through today; they do not reset when the visible range changes. Repeated identities are counted once, never summed from daily distincts. Duplicate mappings don't multiply counts; conflicting mappings cause an explicit error. Missing mappings don't reduce user or organization counts.</p>

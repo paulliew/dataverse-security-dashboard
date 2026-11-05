@@ -9,7 +9,7 @@ test('default 90-day synthetic trends, inspection, range, CSV and methodology wo
   await expect(page.getByRole('heading', { name: 'Cumulative Agent users', exact: true })).toBeVisible();
   await expect(page.getByText('July 25, 2026 – October 23, 2026')).toBeVisible();
   await page.getByRole('button', { name: 'Show daily data' }).click();
-  await expect(page.locator('tbody tr')).toHaveCount(91);
+  await expect(page.locator('#daily-table tbody tr')).toHaveCount(91);
   await expect(page.getByRole('columnheader', { name: 'Organizations to date', exact: true })).toBeVisible();
   await expect(page.getByRole('columnheader', { name: 'Mapped tenants to date', exact: true })).toBeVisible();
   await expect(page.getByRole('columnheader', { name: 'Agent users to date', exact: true })).toBeVisible();
@@ -17,7 +17,7 @@ test('default 90-day synthetic trends, inspection, range, CSV and methodology wo
   const cumulativeReadout = await page.locator('[data-value="cumulativeUsers"]').innerText();
   const organizationCard = await page.locator('.kpi-value').nth(1).innerText();
   const tenantCard = await page.locator('.kpi-value').nth(2).innerText();
-  const latestCounts = await page.locator('tbody tr').first().locator('td').allTextContents();
+  const latestCounts = await page.locator('#daily-table tbody tr').first().locator('td').allTextContents();
   await page.getByLabel('Inspect day').fill('2026-10-22');
   await page.getByLabel('Inspect day').dispatchEvent('change');
   await expect(page.locator('[data-chart-date]').first()).toHaveText('Oct 22');
@@ -26,7 +26,7 @@ test('default 90-day synthetic trends, inspection, range, CSV and methodology wo
   await expect(page.getByLabel('Inspect day')).toHaveValue('2026-10-21');
   await page.keyboard.press('Home');
   await expect(page.getByLabel('Inspect day')).toHaveValue('2026-07-25');
-  const oldestCounts = await page.locator('tbody tr').last().locator('td').allTextContents();
+  const oldestCounts = await page.locator('#daily-table tbody tr').last().locator('td').allTextContents();
   await expect(page.locator('[data-value="cumulativeUsers"]')).toHaveText(Number(oldestCounts[1]).toLocaleString('en-US'));
   const downloadPromise = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Export CSV' }).click();
@@ -48,13 +48,13 @@ test('default 90-day synthetic trends, inspection, range, CSV and methodology wo
   }
   expect(csvRows.at(-1)!.slice(1, 5)).toEqual(latestCounts);
   await page.getByLabel('Trend date range').selectOption('7');
-  await expect(page.locator('tbody tr')).toHaveCount(8);
+  await expect(page.locator('#daily-table tbody tr')).toHaveCount(8);
   await expect(page.locator('.kpi-value').nth(1)).toHaveText(organizationCard);
   await expect(page.locator('.kpi-value').nth(2)).toHaveText(tenantCard);
   await expect(page.locator('[data-value="cumulativeUsers"]')).toHaveText(cumulativeReadout);
-  expect(await page.locator('tbody tr').first().locator('td').allTextContents()).toEqual(latestCounts);
+  expect(await page.locator('#daily-table tbody tr').first().locator('td').allTextContents()).toEqual(latestCounts);
   const firstVisible = csvRows.find(row => row[0] === '2026-10-16')!;
-  expect(await page.locator('tbody tr').last().locator('td').allTextContents()).toEqual(firstVisible.slice(1, 5));
+  expect(await page.locator('#daily-table tbody tr').last().locator('td').allTextContents()).toEqual(firstVisible.slice(1, 5));
   await page.setViewportSize({ width: 800, height: 900 });
   await expect(page.locator('.trend-chart').first()).toHaveAttribute('viewBox', '0 0 450 222');
   await expect(page.locator('[data-metric="cumulativeUsers"]')).toHaveAttribute('viewBox', '0 0 450 222');
@@ -77,11 +77,31 @@ test('mobile layout fits the viewport and exposes daily counts accessibly', asyn
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await expect(page.getByRole('button', { name: 'Export CSV' })).toBeVisible();
   await page.getByRole('button', { name: 'Show daily data' }).click();
-  await expect(page.getByRole('table')).toBeVisible();
+  await expect(page.locator('#daily-table table')).toBeVisible();
   await expect(page.locator('[data-metric="cumulativeUsers"]')).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.getByRole('button', { name: 'How it works' }).click();
   await expect(page.getByRole('dialog')).toBeVisible();
   await page.getByRole('button', { name: 'Close methodology' }).click();
   await expect(page.getByRole('dialog')).not.toBeVisible();
+});
+
+test('separate detection view deduplicates per organization and keeps its 24-hour window on range changes', async ({ page }) => {
+  await page.clock.setFixedTime(new Date('2026-11-05T17:00:00Z'));
+  await page.goto('/');
+  const view = page.locator('#detections');
+  await expect(view.getByRole('heading', { name: 'Agents per organization' })).toBeVisible();
+  await expect(view).toContainText('2026-11-04T17:00:00.000Z inclusive');
+  await expect(view).toContainText('2026-11-05T17:00:00.000Z exclusive');
+  await expect(view.locator('tbody tr')).toHaveCount(12);
+  const rows = await view.locator('tbody tr').allTextContents();
+  await expect(view.locator('tbody tr').first().locator('td')).toHaveText(['6', '6', '3']);
+  await expect(view.locator('.kpi-value').first()).toHaveText('6');
+  const cards = await view.locator('.kpi-value').allTextContents();
+  await page.getByLabel('Trend date range').selectOption('7');
+  expect(await view.locator('tbody tr').allTextContents()).toEqual(rows);
+  expect(await view.locator('.kpi-value').allTextContents()).toEqual(cards);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(view.getByRole('table')).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
