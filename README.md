@@ -2,7 +2,7 @@
 
 A responsive, sample-data-first dashboard for **Dataverse Agent user creation trends**. Explore daily new Agent users alongside a separate cumulative distinct Agent users chart and accumulated distinct organizations and mapped tenants to date. All cumulative counts include available history before the displayed range. This first feature measures creation/adoption, **not** runtime usage, security posture, enabled-user inventory, or sign-ins.
 
-The separate **Agents per organization** view shows illustrative Agent-user detections over the last 24 hours, deduplicated across authentication and provisioning sources. It is not creation-based and does not change the existing creation trends.
+The separate **Agents per organization** view shows illustrative Agent-user detections over the **past week (rolling 7 days / 168 hours) for WRR**, deduplicated across the whole week and both authentication and provisioning sources. It is not creation-based and does not change the existing creation trends.
 
 **Everything shown is synthetic. No Dataverse, Microsoft Graph, or production analytics queries are executed.** No credentials or environment configuration are required. Future security features are labeled Planned, not implemented.
 
@@ -61,9 +61,9 @@ The supplied report query merges sketches globally and returns overall identitie
 
 The template keeps `OrganizationId` while computing accuracy-2 HLL sketches per organization and source, then merges sketches across sources for each organization. Merge sketches across clusters before estimating counts; do not sum per-cluster or per-source distinct counts. These KQL counts are approximate. The template has not been executed against production or validated against a confirmed schema.
 
-The sample uses `{ timestamp, organizationId, agentId, source: 'authentication' | 'provisioning' }` records and exact sets in `src/detections.ts`. Its separate window is `[page-load time minus 24 hours, page-load time)` in UTC. Lowercase IDs are deduplicated within each organization across both sources; blank IDs are excluded. Both timestamps are shown. Repeated detections are not operations or additional agents. One agent in multiple organizations contributes to each organization row but only once to the global identity total. Source columns overlap and cannot be added to get the union. Source pair cards count distinct organization/agent pairs, not globally distinct identities. Only organizations with qualifying detections are listed; an absent organization does not imply it has no Agent users.
+The sample uses `{ timestamp, organizationId, agentId, source: 'authentication' | 'provisioning' }` records and exact sets in `src/detections.ts`. Its separate WRR window is `[page-load time minus 7 days, page-load time)` in UTC: a rolling 168 hours, not the previous calendar week. The KQL template uses the same seven-day window ending at query execution time. Lowercase IDs are deduplicated within each organization across the whole week and both sources; blank IDs are excluded. Never sum daily distincts to compute weekly distinct agents. Both timestamps are shown. Repeated detections are not operations or additional agents. One agent in multiple organizations contributes to each organization row but only once to the global identity total. Source columns overlap and cannot be added to get the union. Source pair cards count distinct organization/agent pairs, not globally distinct identities. Only organizations with qualifying detections are listed; an absent organization does not imply it has no Agent users.
 
-Fixtures include repeat detections, source overlap, shared identities across organizations and single-source identities. The detection view uses neither creation correlations nor tenant mappings and does not claim inventory completeness, sign-ins, or report reconciliation. The existing CSV export remains creation-trend-only; detection rows appear in their own accessible table.
+Fixtures include repeat detections across days, signals older than 24 hours, source overlap, shared identities across organizations and single-source identities. The detection view uses neither creation correlations nor tenant mappings and does not claim inventory completeness, sign-ins, or report reconciliation. The existing CSV export remains creation-trend-only; detection rows appear in their own accessible table.
 
 ## Architecture & later live integration
 
@@ -71,7 +71,7 @@ Fixtures include repeat detections, source overlap, shared identities across org
 | --- | --- |
 | `src/sampleData.ts` | Synthetic provider and organization-details fixtures |
 | `src/analytics.ts` | Typed event/mapping contracts, correlation, exact distinct UTC aggregations |
-| `src/detections.ts` | Independent 24-hour detection window and exact per-organization/source deduplication |
+| `src/detections.ts` | Independent detection-window aggregation and exact per-organization/source deduplication |
 | `queries/agents-per-organization.kql` | Sanitized, approximate HLL per-organization query template |
 | `src/main.ts` | Dashboard rendering, date inspection, methodology and CSV |
 | `src/style.css` | Responsive styling, keyboard focus and reduced-motion support |

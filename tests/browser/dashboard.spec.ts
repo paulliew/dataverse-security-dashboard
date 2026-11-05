@@ -86,12 +86,13 @@ test('mobile layout fits the viewport and exposes daily counts accessibly', asyn
   await expect(page.getByRole('dialog')).not.toBeVisible();
 });
 
-test('separate detection view deduplicates per organization and keeps its 24-hour window on range changes', async ({ page }) => {
+test('WRR detection view deduplicates per organization across the past week and keeps its window on range changes', async ({ page }) => {
   await page.clock.setFixedTime(new Date('2026-11-05T17:00:00Z'));
   await page.goto('/');
   const view = page.locator('#detections');
   await expect(view.getByRole('heading', { name: 'Agents per organization' })).toBeVisible();
-  await expect(view).toContainText('2026-11-04T17:00:00.000Z inclusive');
+  await expect(view).toContainText('Past week (rolling 7 days / 168 hours)');
+  await expect(view).toContainText('2026-10-29T17:00:00.000Z inclusive');
   await expect(view).toContainText('2026-11-05T17:00:00.000Z exclusive');
   await expect(view.locator('tbody tr')).toHaveCount(12);
   const rows = await view.locator('tbody tr').allTextContents();

@@ -50,13 +50,17 @@ export function loadSampleData(now = new Date()): SampleDataset {
   for (let org = 1; org <= 12; org++) {
     for (let agent = 0; agent < 2 + org % 5; agent++) {
       const base = {
-        timestamp: new Date(now.getTime() - (1 + agent) * 3_600_000).toISOString(),
+        timestamp: new Date(now.getTime() - (1 + agent * 24) * 3_600_000).toISOString(),
         organizationId: `sample-org-${org}`,
         agentId: `sample-detected-agent-${agent}`,
       };
       detections.push({ ...base, source: 'authentication' });
       if (agent % 2 === 0) detections.push({ ...base, source: 'provisioning' });
-      detections.push({ ...base, source: 'authentication' });
+      detections.push({
+        ...base,
+        timestamp: new Date(Date.parse(base.timestamp) - 86_400_000).toISOString(),
+        source: 'authentication',
+      });
     }
   }
   return { mode: 'synthetic', asOf, historyStart: daysBefore(asOf, 120), events, organizationDetails, detections, detectionEndTime };

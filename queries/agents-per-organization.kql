@@ -3,7 +3,8 @@
 // verified Agent-user detection filters, and expose Timestamp, OrganizationId,
 // AgentId. Do not filter for creation or require a creation correlation.
 let EndTime = now();
-let StartTime = EndTime - 24h;
+// WRR: rolling past week, not the previous calendar week.
+let StartTime = EndTime - 7d;
 let SourceCounts =
     union
         (AuthenticationAgentSignals | extend Source = "authentication"),
