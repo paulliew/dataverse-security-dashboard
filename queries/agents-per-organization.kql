@@ -40,6 +40,50 @@ let PerOrganization = materialize(SourceCounts
 | project organizationId = OrganizationId, agents = dcount_hll(AllAgentSketch),
           authentication = coalesce(AuthenticationDetectedAgents, tolong(0)),
           provisioning = coalesce(ProvisioningDetectedAgents, tolong(0)));
+// The private adapter must expose only the latest organization-details snapshot
+// per organization, including an empty tenant when the latest mapping is unset.
+// Empty/all-zero IDs are unmapped; conflicting latest mappings reject the export.
+let MappingAsOf = now();
+let TenantMappings = materialize(NormalizedOrganizationDetails
+    | project OrganizationId = tolower(trim(@"\s+", OrganizationId)),
+              TenantId = tolower(trim(@"\s+", TenantId))
+    | summarize Tenants = make_set_if(TenantId,
+        isnotempty(TenantId) and TenantId != "00000000-0000-0000-0000-000000000000", 2)
+        by OrganizationId);
+let MappingConflicts = toscalar(TenantMappings
+    | summarize Conflicts = countif(array_length(Tenants) > 1) | project Conflicts);
+let ResolvedMappings = TenantMappings | where array_length(Tenants) == 1
+    | project OrganizationId, TenantId = tostring(Tenants[0]);
+let TenantOrganizations = PerOrganization | project OrganizationId = organizationId
+    | join kind=leftouter ResolvedMappings on OrganizationId
+    | extend TenantId = tostring(TenantId)
+    | summarize organizations = count() by TenantId;
+// Merge identity sketches, never sum the organization-level estimates.
+let TenantSources = SourceCounts
+    | join kind=leftouter ResolvedMappings on OrganizationId
+    | extend TenantId = tostring(TenantId)
+    | summarize Sketch = hll_merge(AgentSketch) by TenantId, Source;
+let TenantCounts = materialize(TenantSources
+    | extend SourceAgents = dcount_hll(Sketch)
+    | summarize AllSketch = hll_merge(Sketch),
+        Authentication = maxif(SourceAgents, Source == "authentication"),
+        Provisioning = maxif(SourceAgents, Source == "provisioning") by TenantId
+    | join kind=inner TenantOrganizations on TenantId
+    | project tenantId = TenantId, organizations, agents = dcount_hll(AllSketch),
+        authentication = coalesce(Authentication, tolong(0)),
+        provisioning = coalesce(Provisioning, tolong(0)));
+let UnmappedDetections = toscalar(TenantCounts | where isempty(tenantId)
+    | project Counts = bag_pack("organizations", organizations, "agents", agents,
+        "authentication", authentication, "provisioning", provisioning));
+let AgentsByTenant = toscalar(TenantCounts | where isnotempty(tenantId)
+    | order by agents desc, tenantId asc
+    | summarize rows = make_list(bag_pack("tenantId", tenantId, "organizations", organizations,
+        "agents", agents, "authentication", authentication, "provisioning", provisioning), 1048576),
+        rowCount = count()
+    | project Counts = bag_pack("mapping", "organization-details", "asOf", MappingAsOf,
+        "rowCount", rowCount, "rows", rows, "conflictingOrganizationMappings", MappingConflicts,
+        "unmapped", coalesce(UnmappedDetections,
+            dynamic({"organizations":0,"agents":0,"authentication":0,"provisioning":0}))));
 PerOrganization
 | order by agents desc, organizationId asc
 | summarize rows = make_list(bag_pack("organizationId", organizationId,
@@ -50,4 +94,5 @@ PerOrganization
     "coverage", "configured-source-groups", "startTime", StartTime, "endTime", EndTime,
     "rows", rows, "rowCount", rowCount,
     "totals", bag_pack("agents", GlobalAgents, "organizations", GlobalOrganizations,
-        "authenticationPairs", AuthenticationPairs, "provisioningPairs", ProvisioningPairs)))
+        "authenticationPairs", AuthenticationPairs, "provisioningPairs", ProvisioningPairs),
+    "agentsByTenant", AgentsByTenant))

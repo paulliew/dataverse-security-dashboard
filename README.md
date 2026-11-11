@@ -4,7 +4,13 @@ A responsive, sample-data-first dashboard for **Dataverse Agent user creation tr
 
 The separate **Agents per organization** view shows illustrative Agent-user detections over the **past week (rolling 7 days / 168 hours) for WRR**, deduplicated across the whole week and both authentication and provisioning sources. It is not creation-based and does not change the existing creation trends.
 
-**By default, all counts shown are synthetic and WAU/call volume/tenant attribution are unavailable.** An optional private production snapshot can replace **Agents per organization** and provide **observed weekly active Agent users (WAU)** and **weekly successful Agent call volume**; creation charts, cumulative counts, creation daily tables, tenant mappings and CSV remain synthetic. Mixed mode is explicitly labeled. The application executes no Dataverse, Microsoft Graph or production analytics queries and stores no production credentials. Future security features are labeled Planned, not implemented.
+**By default, all counts shown are synthetic and WAU/call volume/tenant attribution are unavailable.** An optional private production snapshot populates the **production overview**, **Agents per organization** and **Agents per tenant**, and can provide **observed weekly active Agent users (WAU)**, **weekly successful Agent call volume** and successful-call tenant attribution. Creation charts, cumulative creation counts, creation daily tables, sample organization-to-tenant mappings and creation CSV remain synthetic. Mixed mode is explicitly labeled. The application executes no Dataverse, Microsoft Graph or production analytics queries and stores no production credentials. Future security features are labeled Planned, not implemented.
+
+With a production snapshot, the **main overview shows production seven-day detections**, mapped tenants and unmapped organization coverage. The organization card identifies its approximate HLL estimate separately from the exact organization row count. The 90-day synthetic creation overview is moved into a **collapsed Synthetic creation demo**, with its own date controls and **Export sample CSV** button. Sample KPIs and chart headers are explicitly labeled synthetic; changing their date range never changes production totals or the production window. Missing production tenant data is unavailable, not zero. A failed configured snapshot shows an unavailable production overview rather than promoting sample values.
+
+**Creation samples do not reconcile with production detections.** Sample creation counts are generated examples, not measured history. Even with future production history, new creation events and detected identities are different metrics: detections can include users created before the report window, and one identity can appear in many organizations. No production 90-day creation series or lifetime inventory is currently loaded; do not scale sample charts to match production totals.
+
+The separate **Weekly business review (WBR)** section adds three completed UTC weeks of accumulated observed Agent identities since October 1, 2026, %WoW growth and weekly Agent call volumes. It uses its own optional private historical snapshot. Missing history is explicitly unavailable, never inferred from the rolling seven-day report or synthetic creation data.
 
 ## Run locally
 
@@ -25,6 +31,50 @@ npm run preview
 The default range starts **90 UTC dates before today, through today inclusive**: 91 aligned daily buckets. For example, on October 23, 2026 it starts July 25, 2026. Synthetic history begins 120 UTC dates before today (June 25, 2026 in that example), so cumulative user, organization and tenant counts have a baseline before the chart starts. The dataset is generated deterministically relative to the UTC date when the page loads; today is a full illustrative sample, not measured partial-day telemetry. Reload after midnight to advance the anchor date.
 
 Use the date-range selector, hover charts, or focus a chart and use Left/Right/Home/End to inspect dates. The date input synchronizes all four charts. “Show daily data” exposes an accessible table; “Export CSV” downloads the selected daily series with a synthetic-data column and filename. “How it works” documents the definitions in-app.
+
+## Weekly business review (WBR)
+
+The **Weekly business review** section (`/#wbr`) supports **Accelerate Profitable Business growth** reporting: accumulated observed Agent identities, **%WoW** growth, and separate weekly successful Agent call volumes. The approved identity observation start is **October 19, 2026**; the chart and methodology display the loaded snapshot's own observation start, including for older reports. It shows the **three most recent completed Monday–Sunday UTC weeks**, with two trend charts and an accessible weekly table. These calendar weeks are independent of both the sample creation range and the rolling detection report.
+
+Identity totals must be **exact distinct IDs across organizations and detection sources from the observation start through each week-end**. Do not sum weekly distinct counts, sum per-organization totals, substitute creation counts or use approximate rolling detection estimates. This is observed accumulation, not lifetime or enabled-user inventory. The first %WoW needs the preceding week-end cumulative baseline: `(current - previous) / previous * 100`. Unknown current/prior totals give unavailable growth. A verified zero denominator gives **N/A** and the absolute increase, never a fabricated percentage. When observation begins with the first reporting week, its baseline represents an empty observation interval, not zero identities in existence beforehand, and first-week %WoW is N/A.
+
+Calls are independent **calendar-week** totals using the existing successful non-batch, same-week detected-cohort definition below. Missing identity history can coexist with verified call volumes. Verified zero values are shown as zero; unavailable values require a reason and create chart gaps. No history is inferred from a missing row or zero-filled. A historical snapshot retains its own dates and shows a warning when newer completed weeks exist.
+
+Reuse the **Weekly Agent call volume** request-selection, request-ID deduplication, diagnostics and counting logic from [`queries/observed-wau.kql`](queries/observed-wau.kql). Change only the reporting start/end times to each completed UTC calendar week and resolve the detected cohort within that same window. Do not reuse the current rolling-window cohort or sum daily bars from a different report window. The rolling chart and WBR can therefore have different totals despite using the same calculation.
+
+Preserve at least **three completed weekly results** in private history outside this repository, together with the preceding cumulative-identity baseline needed for the first %WoW. Each new report carries forward the previous two completed weeks and adds the newest completed week. The observation start stays fixed as the displayed weeks advance. Also retain the **exact identity membership since that start**, with first-observed week and source provenance, to deduplicate new weeks against identities observed before the displayed window. Historical scalar totals alone cannot do this. Require contiguous verified observation periods; never skip a missing week. Keep verified historical values even when raw telemetry is no longer available; disclose corrections rather than silently replacing frozen counts. Keep identity histories for different observation starts separate while retaining comparable call weeks. Missing new-week data remains unavailable, never zero. Archive the prior report before replacing the current private snapshot; do not activate scheduled refresh or email merely by loading a snapshot.
+
+Load this section through a **separate private snapshot**, so a missing/invalid WBR file cannot invalidate production detections or their tenant views:
+
+```dotenv
+WBR_SNAPSHOT_PATH='C:\private-data\agent-wbr.json'
+```
+
+Restart Vite after changing `.env.local`; reload the page after updating the private file. The read-only, no-store, localhost-only `/api/wbr-snapshot` endpoint uses the same outside-repository path protections as detection snapshots. No configured file means unavailable WBR metrics; an invalid configured file shows an explicit WBR error, not sample values. Neither file is included in build assets. The application executes no analytics queries, sends no email, schedules no jobs and never edits the WBR document.
+
+Private WBR contract (types describe the structure, not measured telemetry):
+
+```typescript
+type Metric = { status: 'verified'; value: number }
+  | { status: 'unavailable'; reason: string };
+type Calls = { status: 'verified'; value: number;
+  missingRequestIds: 0; conflictingRequestIds: 0 }
+  | { status: 'unavailable'; reason: string };
+{
+  version: 1;
+  dataMode: 'production';
+  coverage: 'configured-source-groups';
+  observationStart: string; // Explicit approved start, at midnight UTC
+  asOf: string; // UTC read time; not in the future
+  identityCountMethod: 'exact-distinct-identities';
+  callCountMethod: 'distinct-request-ids';
+  callScope: 'detected-cohort-nonbatch-success';
+  baseline: { endTime: string; identities: Metric };
+  weeks: { startTime: string; endTime: string; identities: Metric; calls: Calls }[];
+}
+```
+
+Supply exactly three consecutive completed weeks, oldest first, aligned to Monday 00:00 UTC and derived from `asOf`. End timestamps are exclusive. `baseline.endTime` must equal the first week's start. All periods must follow the declared observation start; a verified baseline exactly at that start must be zero. Verified cumulative values must be nondecreasing, including across unknown intervening weeks. Every count must be a nonnegative safe integer. The adapter must independently verify observation history from the declared start before labeling a cumulative value `verified`; missing retained telemetry does **not** establish a zero baseline. Changing the start requires explicit approval and relabeling, not silently treating missing earlier history as zero. Use an explicit unavailable reason when that history cannot be substantiated. Call diagnostics must be zero for each verified week. Keep source queries, identity histories, exports and real metrics outside this public repository.
 
 ## Identity terminology
 
@@ -59,11 +109,21 @@ The supplied report query merges sketches globally and returns overall identitie
 
 [`queries/agents-per-organization.kql`](queries/agents-per-organization.kql) is a **sanitized template**, not a runnable production query. Its fictitious normalized views expose `Timestamp`, `OrganizationId` and `AgentId` after verified source-specific Agent-user detection filters. A private adapter must implement the authentication source's detection/confirmation signals and the provisioning source's explicit Agent-user identification signals, including extraction and validation of the user ID. No creation event, operation or correlation is required for this view. The adapter must include all approved clusters for each source and report incomplete coverage rather than silently treating missing clusters as zero. Actual source names, filters and infrastructure configuration are deliberately not published here.
 
-The template keeps `OrganizationId` while computing accuracy-2 HLL sketches per organization and source, then merges sketches across sources for each organization. Merge sketches across clusters before estimating counts; do not sum per-cluster or per-source distinct counts. These KQL counts are approximate. The template has not been executed against production or validated against a confirmed schema.
+The template keeps `OrganizationId` while computing accuracy-2 HLL sketches per organization and source, then merges sketches across sources for each organization. Merge sketches across clusters before estimating counts; do not sum per-cluster or per-source distinct counts. These KQL counts are approximate. The normalized template is illustrative; its aggregation has been checked with synthetic analytics fixtures, but production source adapters and schemas must be verified privately.
 
 The sample uses `{ timestamp, organizationId, agentId, source: 'authentication' | 'provisioning' }` records and exact sets in `src/detections.ts`. Its separate WRR window is `[page-load time minus 7 days, page-load time)` in UTC: a rolling 168 hours, not the previous calendar week. The KQL template uses the same seven-day window ending at query execution time. Lowercase IDs are deduplicated within each organization across the whole week and both sources; blank IDs are excluded. Never sum daily distincts to compute weekly distinct agents. Both timestamps are shown. Repeated detections are not operations or additional agents. One agent in multiple organizations contributes to each organization row but only once to the global identity total. Source columns overlap and cannot be added to get the union. Source pair cards count distinct organization/agent pairs, not globally distinct identities. Only organizations with qualifying detections are listed; an absent organization does not imply it has no Agent users.
 
-Fixtures include repeat detections across days, signals older than 24 hours, source overlap, shared identities across organizations and single-source identities. The detection view uses neither creation correlations nor tenant mappings and does not claim inventory completeness, sign-ins, or report reconciliation. The existing CSV export remains creation-trend-only; detection rows appear in their own accessible table.
+Fixtures include repeat detections across days, signals older than 24 hours, source overlap, shared identities across organizations and single-source identities. Organization detections do not require creation correlations or tenant mappings and do not claim inventory completeness, sign-ins, or report reconciliation. The existing CSV export remains creation-trend-only; detection rows appear in their own accessible tables.
+
+### Agents per tenant: the same seven-day detections
+
+The **Agents per tenant** table extends the organization view without changing its cohort or time window. Map every detected organization through organization details, then **union identities across all of each tenant's organizations and both detection sources**. One identity in two organizations within one tenant counts once for that tenant; the same identity in different tenants can count once in each. Authentication/provisioning columns are tenant-level distinct identities, not organization/identity pair counts. Source columns overlap, and tenant counts must not be summed to get the global distinct identity total.
+
+The same sanitized template also expects `NormalizedOrganizationDetails` with `OrganizationId` and `TenantId`. Its private adapter must first select the latest available snapshot globally per organization, including a latest unset mapping; never carry an older nonempty tenant forward. Repeated identical mappings cannot fan out the join. Conflicting nonempty tenants at that latest snapshot reject the export. The query merges accuracy-2 HLL sketches **before estimating tenant counts** and counts organizations exactly. Missing mappings appear in a separate unmapped row with independently deduplicated identities and source counts; those identities can overlap mapped tenants. Mapped organization counts plus unmapped organizations must equal the exact detection organization row count, not the approximate global organization estimate.
+
+Tenant names are optional verified labels, never grouping keys; absent names show **Name unavailable**. The private snapshot's optional root-level `agentsByTenant` uses the parent report's exact window and cohort. It must come from the same detection aggregation, not sums of organization estimates, a partial export, or the successful-call tenant breakdown (which covers only successful callers). If metadata is read separately, retain mergeable identity sketches or exact memberships from the original detection run. Requerying an old window is not proof of the same cohort; compare against the original export or refresh all cohort-dependent metrics coherently. Keep these private intermediates outside the repository.
+
+This view shows seven-day detected identities, **not all-time accumulated inventory**. Current mappings and names do not prove historical tenant ownership. The mapping read time and unmapped coverage are displayed. Legacy production snapshots without `agentsByTenant` show **unavailable**, not synthetic data or zero. The accessible table paginates 100 tenants at a time and is independent of creation-range controls. Open `http://127.0.0.1:5173/#tenant-detections` locally.
 
 ## Private production detection snapshots
 
@@ -92,6 +152,17 @@ Snapshot contract (illustrative structure; all counts below are placeholders):
   rowCount: number;  // exact number of organization rows, used to reject truncation
   rows: { organizationId: string; agents: number; authentication: number; provisioning: number }[];
   totals: { agents: number; organizations: number; authenticationPairs: number; provisioningPairs: number };
+  agentsByTenant?: {
+    mapping: 'organization-details';
+    asOf: string; // UTC metadata read time; parent window/cohort applies
+    rowCount: number; // exact number of mapped tenant rows
+    rows: {
+      tenantId: string; tenantName?: string; organizations: number;
+      agents: number; authentication: number; provisioning: number;
+    }[];
+    unmapped: { organizations: number; agents: number; authentication: number; provisioning: number };
+    conflictingOrganizationMappings: 0;
+  };
   wau?: {
     scope: 'detected-cohort-nonbatch-success';
     countMethod: 'approximate-hll2';
@@ -109,7 +180,7 @@ Snapshot contract (illustrative structure; all counts below are placeholders):
       mapping: 'organization-details';
       asOf: string; // UTC mapping read time, not verified historical membership
       rowCount: number; // exact number of mapped tenant rows
-      rows: { tenantId: string; calls: number }[];
+      rows: { tenantId: string; tenantName?: string; calls: number }[];
       unmappedCalls: number;
       conflictingOrganizationMappings: 0;
     };
@@ -153,7 +224,9 @@ If a combined distributed query exceeds planning limits, the private export can 
 
 The query embeds `byTenant` inside `CallVolume`, with exact row count, full tenant IDs, individual request counts, unmapped calls and zero-conflict diagnostics. The snapshot parser validates positive mapped counts, unique canonical tenant IDs, complete rows, read timestamp, mapping type and reconciliation to the existing weekly volume. Missing attribution is **unavailable**, not zero, sample-based, or inferred from unrelated caller fields. Nonzero conflicts or invalid/inconsistent attribution reject the snapshot; preserve the last valid private file.
 
-The chart ranks the **top 10 mapped tenants**, groups the rest as Other, and includes Unmapped where applicable. The table retains all mapped tenants, paginated 100 at a time, and always shows unmapped calls. Shares use **all weekly successful calls**, including unmapped calls, as the denominator. Chart labels may abbreviate tenant IDs on narrow screens; the table exposes full IDs. All categories reconcile to weekly volume; changing the creation date range does not affect attribution. Open `http://127.0.0.1:5173/#call-tenants` locally. Tenant identifiers and production rows must remain in the private snapshot, never committed or copied to public artifacts.
+The chart ranks the **top 10 mapped tenants**, groups the rest as Other, and includes Unmapped where applicable. The table retains all mapped tenants, paginated 100 at a time, and always shows unmapped calls. It displays **Tenant name** alongside the full **Tenant ID**. The optional `tenantName` is a current display label looked up by tenant ID from a verified tenant-level metadata source; do not substitute organization/environment names, caller identities, or inferred legal customer names. A private adapter can enrich the existing tenant rows without rerunning the request query or changing any counts. Resolve the latest source records before enrichment, deduplicate identical names, and reject conflicting names rather than selecting arbitrarily. Missing or blank names display **Name unavailable**; older snapshots without names remain valid, and malformed non-string names are rejected. Names are escaped when rendered and do not change ID-based attribution, sorting, pagination or totals.
+
+Shares use **all weekly successful calls**, including unmapped calls, as the denominator. Chart labels may abbreviate tenant IDs on narrow screens; the table exposes full IDs. All categories reconcile to weekly volume; changing the creation date range does not affect attribution. Open `http://127.0.0.1:5173/#call-tenants` locally. Tenant names, identifiers and production rows must remain in the private snapshot, never committed or copied to public artifacts.
 
 ## Architecture & later live integration
 

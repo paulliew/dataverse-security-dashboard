@@ -3,10 +3,20 @@ import type { Connect, Plugin } from 'vite';
 import { readFile, realpath } from 'node:fs/promises';
 import { isAbsolute, relative, sep } from 'node:path';
 import { parseProductionSnapshot } from './src/snapshot.ts';
+import { parseWbrSnapshot } from './src/wbr.ts';
 
 export function snapshotMiddleware(snapshotPath?: string): Connect.NextHandleFunction {
+  return privateSnapshotMiddleware(snapshotPath, '/api/detection-snapshot', parseProductionSnapshot, 'Production detection');
+}
+
+export function wbrSnapshotMiddleware(snapshotPath?: string): Connect.NextHandleFunction {
+  return privateSnapshotMiddleware(snapshotPath, '/api/wbr-snapshot', parseWbrSnapshot, 'Weekly WBR');
+}
+
+function privateSnapshotMiddleware(snapshotPath: string | undefined, endpoint: string,
+  parseSnapshot: (value: unknown) => unknown, label: string): Connect.NextHandleFunction {
   return async (request, response, next) => {
-    if (request.url?.split('?')[0] !== '/api/detection-snapshot') return next();
+    if (request.url?.split('?')[0] !== endpoint) return next();
     response.setHeader('Cache-Control', 'no-store');
     response.setHeader('X-Content-Type-Options', 'nosniff');
     const host = request.headers.host;
@@ -34,25 +44,30 @@ export function snapshotMiddleware(snapshotPath?: string): Connect.NextHandleFun
       if (!isAbsolute(relativePath) && relativePath !== '..' && !relativePath.startsWith(`..${sep}`)) {
         throw new Error('Production snapshot must be outside the repository.');
       }
-      const snapshot = parseProductionSnapshot(JSON.parse(await readFile(privatePath, 'utf8')));
+      const snapshot = parseSnapshot(JSON.parse(await readFile(privatePath, 'utf8')));
       response.setHeader('Content-Type', 'application/json');
       response.end(JSON.stringify(snapshot));
     } catch (error) {
-      console.error('Production detection snapshot could not be loaded:', error instanceof Error ? error.message : 'Unknown error');
+      console.error(`${label} snapshot could not be loaded:`, error instanceof Error ? error.message : 'Unknown error');
       response.statusCode = 503;
       response.setHeader('Content-Type', 'application/json');
-      response.end(JSON.stringify({ error: 'Production detection snapshot is unavailable or invalid. No production counts loaded.' }));
+      response.end(JSON.stringify({ error: `${label} snapshot is unavailable or invalid. No ${label.toLowerCase()} counts loaded.` }));
     }
   };
 }
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
-  const middleware = snapshotMiddleware(env.DETECTION_SNAPSHOT_PATH);
   const snapshotPlugin: Plugin = {
-    name: 'local-detection-snapshot',
-    configureServer(server) { server.middlewares.use(middleware); },
-    configurePreviewServer(server) { server.middlewares.use(middleware); },
+    name: 'local-private-snapshots',
+    configureServer(server) {
+      server.middlewares.use(snapshotMiddleware(env.DETECTION_SNAPSHOT_PATH));
+      server.middlewares.use(wbrSnapshotMiddleware(env.WBR_SNAPSHOT_PATH));
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(snapshotMiddleware(env.DETECTION_SNAPSHOT_PATH));
+      server.middlewares.use(wbrSnapshotMiddleware(env.WBR_SNAPSHOT_PATH));
+    },
   };
   return { plugins: [snapshotPlugin] };
 });

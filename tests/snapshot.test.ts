@@ -26,6 +26,66 @@ test('production snapshot preserves globally merged estimates instead of summing
   assert.equal(parsed.countMethod, 'approximate-hll2');
 });
 
+const agentTenantsFixture = () => ({
+  ...fixture(),
+  agentsByTenant: {
+    mapping: 'organization-details', asOf: '2026-11-05T18:00:00Z', rowCount: 1,
+    rows: [{ tenantId: ' TENANT-A ', tenantName: ' Example tenant ', organizations: 2,
+      agents: 2, authentication: 1, provisioning: 2 }],
+    unmapped: { organizations: 0, agents: 0, authentication: 0, provisioning: 0 },
+    conflictingOrganizationMappings: 0,
+  },
+});
+
+test('tenant detection snapshots are optional and retain merged identities, names and exact organization coverage', () => {
+  assert.equal(parseProductionSnapshot(fixture()).agentsByTenant, undefined);
+  const parsed = parseProductionSnapshot(agentTenantsFixture());
+  assert.deepEqual(parsed.agentsByTenant!.rows, [
+    { tenantId: 'tenant-a', tenantName: 'Example tenant', organizations: 2, agents: 2, authentication: 1, provisioning: 2 },
+  ]);
+  assert.equal(parsed.rows.reduce((sum, row) => sum + row.agents, 0), 3);
+  assert.equal(parsed.agentsByTenant!.rows[0].agents, 2);
+  const unmapped = agentTenantsFixture();
+  unmapped.agentsByTenant.rows = [];
+  unmapped.agentsByTenant.rowCount = 0;
+  unmapped.agentsByTenant.unmapped = { organizations: 2, agents: 2, authentication: 2, provisioning: 2 };
+  assert.equal(parseProductionSnapshot(unmapped).agentsByTenant!.unmapped.agents, 2);
+  const approximateOrganizations = agentTenantsFixture();
+  approximateOrganizations.totals.organizations = 3;
+  assert.equal(parseProductionSnapshot(approximateOrganizations).agentsByTenant!.rows[0].organizations, 2);
+});
+
+test('tenant detection snapshots reject partial coverage, conflicts, duplicates, invalid identities, counts and metadata', () => {
+  const valid = agentTenantsFixture();
+  const attribution = valid.agentsByTenant;
+  const row = attribution.rows[0];
+  for (const [update, pattern] of [
+    [{ rowCount: 2 }, /truncated/],
+    [{ mapping: 'caller-home-tenant' }, /mappings/],
+    [{ conflictingOrganizationMappings: 1 }, /mappings/],
+    [{ asOf: 'invalid' }, /timestamps/],
+    [{ asOf: '9999-11-05T18:00:00Z' }, /future/],
+    [{ rows: [{ ...row, organizations: 1 }] }, /every detected organization/],
+    [{ rowCount: 2, rows: [row, { ...row, tenantId: 'tenant-a' }] }, /duplicate/],
+    [{ rows: [{ ...row, tenantId: '00000000-0000-0000-0000-000000000000' }] }, /Unset/],
+    [{ rows: [{ ...row, tenantId: ' ' }] }, /tenant IDs/],
+    [{ rows: [{ ...row, tenantName: null }] }, /names/],
+    [{ rows: [{ ...row, agents: -1 }] }, /counts/],
+    [{ rows: [{ ...row, organizations: 1.5 }] }, /counts/],
+    [{ rows: [{ ...row, agents: 0 }] }, /together/],
+    [{ rows: [{ ...row, authentication: 0, provisioning: 0 }] }, /together/],
+    [{ rows: [{ ...row, organizations: 0 }] }, /together/],
+    [{ unmapped: { organizations: 0, agents: 0, authentication: 1, provisioning: 0 } }, /together/],
+    [{ unmapped: undefined }, /object/],
+  ] as const) {
+    assert.throws(() => parseProductionSnapshot({ ...valid, agentsByTenant: { ...attribution, ...update } }), pattern);
+  }
+  const noName = parseProductionSnapshot({ ...valid, agentsByTenant: {
+    ...attribution, rows: [{ ...row, tenantName: ' ' }],
+  } });
+  assert.equal(noName.agentsByTenant!.rows[0].tenantName, undefined);
+});
+
 const wauFixture = () => ({
   ...fixture(),
   wau: {
@@ -165,6 +225,27 @@ test('tenant attribution preserves all calls, normalizes and ranks tenants, and 
   zero.callVolume.byTenant.rowCount = 0;
   zero.callVolume.byTenant.unmappedCalls = 0;
   assert.equal(parseProductionSnapshot(zero).callVolume!.byTenant!.rows.length, 0);
+});
+
+test('tenant names are optional, trimmed display labels that do not alter IDs, ordering or counts', () => {
+  const input = tenantFixture();
+  const rows = input.callVolume.byTenant.rows.map((row, index) => ({
+    ...row, tenantName: index ? '  Sample <North> & Partners  ' : '   ',
+  }));
+  const parsed = parseProductionSnapshot({ ...input, callVolume: {
+    ...input.callVolume, byTenant: { ...input.callVolume.byTenant, rows },
+  } });
+  assert.deepEqual(parsed.callVolume!.byTenant!.rows, [
+    { tenantId: 'fixture-tenant-a', tenantName: 'Sample <North> & Partners', calls: 10 },
+    { tenantId: 'fixture-tenant-b', calls: 4 },
+  ]);
+  assert.equal(parsed.callVolume!.calls, 16);
+  for (const tenantName of [null, 42, {}, ['Sample tenant']]) {
+    assert.throws(() => parseProductionSnapshot({ ...input, callVolume: {
+      ...input.callVolume, byTenant: { ...input.callVolume.byTenant,
+        rows: [{ ...input.callVolume.byTenant.rows[0], tenantName }, input.callVolume.byTenant.rows[1]] },
+    } }), /Tenant names must be strings/);
+  }
 });
 
 test('tenant attribution rejects conflicting mappings, wrong attribution, truncated/duplicate rows and nonreconciling volumes', () => {

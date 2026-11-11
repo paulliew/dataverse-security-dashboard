@@ -1,4 +1,4 @@
-import type { aggregateDetections } from './detections.ts';
+import type { aggregateDetections, TenantDetectionCounts } from './detections.ts';
 import { daysBefore } from './analytics.ts';
 
 type DetectionCounts = ReturnType<typeof aggregateDetections>;
@@ -13,8 +13,15 @@ export interface CallsByTenant {
   mapping: 'organization-details';
   asOf: string;
   rowCount: number;
-  rows: { tenantId: string; calls: number }[];
+  rows: { tenantId: string; tenantName?: string; calls: number }[];
   unmappedCalls: number;
+  conflictingOrganizationMappings: 0;
+}
+
+export interface AgentsByTenant extends TenantDetectionCounts {
+  mapping: 'organization-details';
+  asOf: string;
+  rowCount: number;
   conflictingOrganizationMappings: 0;
 }
 
@@ -34,23 +41,24 @@ export interface ProductionSnapshot extends DetectionCounts {
   countMethod: 'approximate-hll2';
   coverage: 'configured-source-groups';
   rowCount: number;
+  agentsByTenant?: AgentsByTenant;
   wau?: ObservedWau;
   callVolume?: ObservedCallVolume;
 }
 
-function object(value: unknown): Record<string, unknown> {
+export function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Expected a snapshot object.');
   return value as Record<string, unknown>;
 }
 
-function count(value: unknown): number {
+export function count(value: unknown): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
     throw new Error('Snapshot counts must be nonnegative safe integers.');
   }
   return value;
 }
 
-function timestamp(value: unknown): string {
+export function timestamp(value: unknown): string {
   if (typeof value !== 'string' || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,7})?Z$/.test(value)
     || !Number.isFinite(Date.parse(value))
     || new Date(value).toISOString().slice(0, 19) !== value.slice(0, 19)) throw new Error('Snapshot requires valid UTC timestamps.');
@@ -102,19 +110,66 @@ function parseCallsByTenant(value: unknown, calls: number): CallsByTenant {
   const ids = new Set<string>();
   const rows = input.rows.map(value => {
     const row = object(value);
-    if (typeof row.tenantId !== 'string' || !row.tenantId.trim()) throw new Error('Tenant attribution requires tenant IDs.');
-    const tenantId = row.tenantId.trim().toLowerCase();
-    if (tenantId === '00000000-0000-0000-0000-000000000000') throw new Error('Unset tenant IDs must be reported as unmapped.');
+    const identity = tenantIdentity(row);
+    const { tenantId } = identity;
     if (ids.has(tenantId)) throw new Error('Tenant attribution has duplicate tenant rows.');
     ids.add(tenantId);
     const calls = count(row.calls);
     if (!calls) throw new Error('Mapped tenant rows must have positive call volumes.');
-    return { tenantId, calls };
+    return { ...identity, calls };
   }).sort((a, b) => b.calls - a.calls || a.tenantId.localeCompare(b.tenantId));
   const unmappedCalls = count(input.unmappedCalls);
   const total = rows.reduce((sum, row) => sum + row.calls, unmappedCalls);
   if (!Number.isSafeInteger(total) || total !== calls) throw new Error('Mapped and unmapped tenant calls must reconcile with weekly call volume.');
   return { mapping: 'organization-details', asOf, rowCount: rows.length, rows, unmappedCalls, conflictingOrganizationMappings: 0 };
+}
+
+function tenantIdentity(row: Record<string, unknown>): { tenantId: string; tenantName?: string } {
+  if (typeof row.tenantId !== 'string' || !row.tenantId.trim()) throw new Error('Tenant attribution requires tenant IDs.');
+  const tenantId = row.tenantId.trim().toLowerCase();
+  if (tenantId === '00000000-0000-0000-0000-000000000000') throw new Error('Unset tenant IDs must be reported as unmapped.');
+  if (row.tenantName !== undefined && typeof row.tenantName !== 'string') throw new Error('Tenant names must be strings when provided.');
+  const tenantName = typeof row.tenantName === 'string' ? row.tenantName.trim() : '';
+  return { tenantId, ...(tenantName ? { tenantName } : {}) };
+}
+
+function parseAgentsByTenant(value: unknown, organizationRows: number): AgentsByTenant {
+  const input = object(value);
+  if (input.mapping !== 'organization-details' || input.conflictingOrganizationMappings !== 0) {
+    throw new Error('Tenant detections require unambiguous organization-details mappings.');
+  }
+  const asOf = timestamp(input.asOf);
+  if (Date.parse(asOf) > Date.now() + 60_000) throw new Error('Tenant mapping read timestamp is in the future.');
+  if (!Array.isArray(input.rows) || input.rows.length !== count(input.rowCount)) {
+    throw new Error('Tenant detection rows are missing or truncated.');
+  }
+  const counts = (value: unknown) => {
+    const row = object(value);
+    const result = { organizations: count(row.organizations), agents: count(row.agents),
+      authentication: count(row.authentication), provisioning: count(row.provisioning) };
+    if (Boolean(result.organizations) !== Boolean(result.agents)
+      || Boolean(result.agents) !== Boolean(result.authentication || result.provisioning)
+      || (!result.organizations && (result.authentication || result.provisioning))) {
+      throw new Error('Tenant detection counts require qualifying organizations and identities together.');
+    }
+    return result;
+  };
+  const ids = new Set<string>();
+  const rows = input.rows.map(value => {
+    const row = object(value);
+    const identity = tenantIdentity(row);
+    if (ids.has(identity.tenantId)) throw new Error('Tenant detections have duplicate tenant rows.');
+    ids.add(identity.tenantId);
+    const result = counts(row);
+    if (!result.organizations) throw new Error('Mapped tenant detections must have positive organization counts.');
+    return { ...identity, ...result };
+  }).sort((a, b) => b.agents - a.agents || a.tenantId.localeCompare(b.tenantId));
+  const unmapped = counts(input.unmapped);
+  const total = rows.reduce((sum, row) => sum + row.organizations, unmapped.organizations);
+  if (!Number.isSafeInteger(total) || total !== organizationRows) {
+    throw new Error('Tenant detections must account for every detected organization exactly once.');
+  }
+  return { mapping: 'organization-details', asOf, rowCount: rows.length, rows, unmapped, conflictingOrganizationMappings: 0 };
 }
 
 function parseCallVolume(value: unknown, startTime: string, endTime: string): ObservedCallVolume {
@@ -179,5 +234,6 @@ export function parseProductionSnapshot(value: unknown): ProductionSnapshot {
     },
     ...(wau ? { wau } : {}),
     ...(callVolume ? { callVolume } : {}),
+    ...(input.agentsByTenant === undefined ? {} : { agentsByTenant: parseAgentsByTenant(input.agentsByTenant, rows.length) }),
   };
 }
