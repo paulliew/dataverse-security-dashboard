@@ -1,0 +1,87 @@
+// SANITIZED TEMPLATE: fictitious normalized views, not production table names.
+// Run privately with the SAME StartTime/EndTime as the detection snapshot.
+// Add Wau and CallVolume as the snapshot's optional "wau" and "callVolume" properties.
+set best_effort=false;
+let EndTime=now();
+let StartTime=EndTime-7d;
+let KnownPairs=materialize(DetectedAgentUsers
+    | where Timestamp >= StartTime and Timestamp < EndTime
+    | project OrganizationId=tolower(OrganizationId), AgentId=tolower(AgentId)
+    | where isnotempty(OrganizationId) and isnotempty(AgentId)
+    | distinct OrganizationId,AgentId);
+let KnownIds=toscalar(KnownPairs | summarize Ids=make_set(AgentId,1048576) | project Ids);
+let SuccessfulRequests=materialize(DataverseRequestCompletions
+    | where Timestamp >= StartTime and Timestamp < EndTime
+    // At the prefilter limit, skip the optimization; the full join stays authoritative.
+    | where array_length(KnownIds) == 1048576 or CallerObjectId in~ (KnownIds)
+    | extend HttpCode=toint(extract(@"^(\d{3})(?:\s|$)",1,HttpStatus))
+    | where HttpCode >= 200 and HttpCode < 300 and HttpCode != 202 and ErrorCode == 0
+    | where RequestPath contains "/api/data/" or RequestPath contains "Organization.svc"
+    | where BatchSize == 0 and RequestPath !contains "$batch"
+    | where OperationName !in~ ("ExecuteMultiple","ExecuteTransaction")
+    | project OrganizationId=tolower(OrganizationId), AgentId=tolower(CallerObjectId), RequestId, CompletedAt=Timestamp
+    | where isnotempty(OrganizationId) and isnotempty(AgentId)
+    | summarize CompletedAt=min(CompletedAt),ObservedRows=count() by OrganizationId,AgentId,RequestId
+    | join kind=inner KnownPairs on OrganizationId,AgentId
+    | project OrganizationId,AgentId,RequestId,CompletedAt,ObservedRows);
+let SuccessfulCallDays=SuccessfulRequests
+    | project OrganizationId,AgentId,Day=startofday(CompletedAt)
+    | distinct OrganizationId,AgentId,Day;
+let MissingRequestIds=toscalar(SuccessfulRequests
+    | where isempty(RequestId) | summarize Missing=sum(ObservedRows) | project Missing);
+let UniqueCalls=materialize(SuccessfulRequests
+    | where isnotempty(RequestId)
+    | summarize CompletedAt=min(CompletedAt),Callers=make_set(AgentId,2) by OrganizationId,RequestId);
+let ConflictingRequestIds=toscalar(UniqueCalls
+    | summarize Conflicts=countif(array_length(Callers)>1) | project Conflicts);
+let WeeklyCalls=toscalar(UniqueCalls | count);
+// The private adapter supplies current organization-details mappings, not caller home tenants.
+let TenantCandidates=materialize(NormalizedOrganizationDetails
+    | project OrganizationId=tolower(OrganizationId),TenantId=tolower(trim(@"\s+",TenantId))
+    | where isnotempty(OrganizationId) and isnotempty(TenantId)
+    | where TenantId != "00000000-0000-0000-0000-000000000000"
+    | join kind=leftsemi (UniqueCalls | distinct OrganizationId) on OrganizationId
+    | summarize Tenants=make_set(TenantId,2) by OrganizationId);
+let ConflictingOrganizationMappings=toscalar(TenantCandidates
+    | summarize Conflicts=countif(array_length(Tenants)>1) | project Conflicts);
+let AttributedCalls=materialize(UniqueCalls
+    | join kind=leftouter (TenantCandidates | where array_length(Tenants)==1
+        | project OrganizationId,TenantId=tostring(Tenants[0])) on OrganizationId);
+let UnmappedCalls=toscalar(AttributedCalls | where isempty(TenantId) | count);
+let TenantCounts=materialize(AttributedCalls
+    | where isnotempty(TenantId) | summarize calls=count() by tenantId=TenantId);
+let TenantRowCount=toscalar(TenantCounts | count);
+let TenantRows=toscalar(TenantCounts | order by calls desc,tenantId asc
+    | summarize Rows=make_list(bag_pack("tenantId",tenantId,"calls",calls),1048576) | project Rows);
+let Wau=toscalar(SuccessfulCallDays
+    | summarize Sketch=hll(AgentId,2) | project dcount_hll(Sketch));
+let LastDate=startofday(iff(EndTime==startofday(EndTime),EndTime-1s,EndTime));
+let Days=range Day from startofday(StartTime) to LastDate step 1d;
+let CallDaily=toscalar(union
+    (UniqueCalls | summarize calls=count() by Day=startofday(CompletedAt)),
+    (Days | project Day,calls=tolong(0))
+    | summarize calls=sum(calls) by Day
+    | order by Day asc
+    | summarize Rows=make_list(bag_pack("day",format_datetime(Day,"yyyy-MM-dd"),"calls",calls))
+    | project Rows);
+let EmptySketch=toscalar(datatable(AgentId:string)[]
+    | summarize Sketch=hll(AgentId,2) | project Sketch);
+let DailySketches=union
+    (SuccessfulCallDays | summarize Sketch=hll(AgentId,2) by Day),
+    (Days | project Day,Sketch=EmptySketch);
+let Daily=toscalar(Days
+    | extend Key=1
+    | join kind=inner (DailySketches | project ActivityDay=Day,Sketch | extend Key=1) on Key
+    | where ActivityDay <= Day
+    | summarize Sketch=hll_merge(Sketch) by Day
+    | project day=format_datetime(Day,"yyyy-MM-dd"),agents=dcount_hll(Sketch)
+    | order by day asc
+    | summarize Rows=make_list(bag_pack("day",day,"agents",agents))
+    | project Rows);
+print Wau=tostring(bag_pack("scope","detected-cohort-nonbatch-success",
+    "countMethod","approximate-hll2","agents",Wau,"daily",Daily)),
+    CallVolume=tostring(bag_pack("scope","detected-cohort-nonbatch-success",
+        "countMethod","distinct-request-ids","calls",WeeklyCalls,"daily",CallDaily,
+        "missingRequestIds",MissingRequestIds,"conflictingRequestIds",ConflictingRequestIds,
+        "byTenant",bag_pack("mapping","organization-details","asOf",now(),"rowCount",TenantRowCount,
+            "rows",TenantRows,"unmappedCalls",UnmappedCalls,"conflictingOrganizationMappings",ConflictingOrganizationMappings)))
